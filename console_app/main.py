@@ -7,6 +7,9 @@ from chess_engine.models import (
     MoveAnalysis,
 )
 from console_app.export import export_game_analysis
+from visualization.heatmap_plot import plot_position_analysis
+from visualization.position_plot import plot_position
+
 
 def print_position_analysis(
     analysis: MoveAnalysis,
@@ -161,8 +164,10 @@ def main() -> None:
     print("VectorChess — Console Analysis")
     print("Въвеждай ходове във формат UCI, например:")
     print("e2e4, e7e5, g1f3")
+    print("board - показва шахматната дъска")
     print("За история напиши: history")
     print("За запис в JSON напиши: export")
+    print("За графична визуализация напиши: plot")
     print("За изход напиши: quit")
 
     while not game.is_game_over():
@@ -176,6 +181,28 @@ def main() -> None:
         if move_text in {"quit", "exit"}:
             print("Играта беше прекратена.")
             return
+
+        if move_text == "plot":
+            if previous_analysis is None:
+                print(
+                    "Все още няма позиция "
+                    "за визуализиране."
+                )
+                continue
+
+            latest_dynamics = (
+                dynamics_history[-1]
+                if dynamics_history
+                else None
+            )
+
+            plot_position(
+                board=game.board,
+                analysis=previous_analysis,
+                dynamics=latest_dynamics,
+            )
+
+            continue
 
         if move_text == "history":
             print_history(
@@ -195,6 +222,14 @@ def main() -> None:
             )
 
             print(f"Анализът беше записан в {output_path}")
+            continue
+
+        if move_text == "plot":
+            if previous_analysis is None:
+                print("Все още няма позиция за визуализиране.")
+                continue
+
+            plot_position_analysis(previous_analysis)
             continue
 
         move_details = game.make_move(move_text)
