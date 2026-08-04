@@ -68,5 +68,32 @@ class MoveAnalysis:
     to_square: str
     is_capture: bool
     is_check: bool
+
     control: ControlSummary
-    vectors: list[ChessVector]
+    heatmap: list[list[int]]
+
+    white_center: tuple[float, float ]|None
+    black_center: tuple[float, float ]|None
+
+    control_vector: FieldVector | None
+    attack_vectors: list[AttackVector]
+
+@dataclass
+class DynamicsAnalysis:
+    previous_force: int
+    current_force: int
+    delta_force: int
+
+    white_control_delta: int
+    black_control_delta: int
+
+    attack_vectors_delta: int
+    heatmap_change: int
+
+    intensity: float
+    label: str
+
+# force = white control - black control
+# prev position: 29 -22 = 7
+# current position: 29-29=0
+# deltaF = 0 - 7 = -7
