@@ -1,0 +1,13 @@
+# Virtual environments
+.venv/
+
+# Visual Studio
+.vs/
+
+# PyCharm
+.idea/
+*.iml
+
+# Python cache
+__pycache__/
+*.py[cod]

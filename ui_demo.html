@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+<meta charset="UTF-8">
+<style>
+  body {
+    background-color: #0f172a;
+    color: #e2e8f0;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 0;
+    padding: 20px;
+  }
+
+  h1 {
+    text-align: center;
+    color: #38bdf8;
+    margin-bottom: 5px;
+  }
+
+  p.subtitle {
+    text-align: center;
+    color: #94a3b8;
+    margin-bottom: 25px;
+  }
+
+  .dashboard {
+    display: flex;
+    justify-content: center;
+    gap: 30px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  .panel {
+    background: #1e293b;
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    border: 1px solid #334155;
+  }
+
+  .panel-title {
+    font-size: 1.2rem;
+    font-weight: bold;
+    margin-bottom: 15px;
+    color: #f8fafc;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  /* ЛЯВА ЧАСТ: Шахматна дъска */
+  .chess-board {
+    width: 400px;
+    height: 400px;
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+    border: 3px solid #475569;
+  }
+
+  .square {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
+    user-select: none;
+  }
+
+  .white-sq { background-color: #cbd5e1; color: #000; }
+  .black-sq { background-color: #475569; color: #fff; }
+
+  /* ДЯСНА ЧАСТ: Геометрично векторно поле */
+  .vector-field {
+    width: 400px;
+    height: 400px;
+    position: relative;
+    background: #090d16;
+    border: 2px solid #38bdf8;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  /* Смущения / Heatmap зони */
+  .heat-zone-white {
+    position: absolute;
+    top: 35%; left: 35%;
+    width: 120px; height: 120px;
+    background: radial-gradient(circle, rgba(56,189,248,0.4) 0%, rgba(56,189,248,0) 70%);
+    border-radius: 50%;
+  }
+
+  .heat-zone-black {
+    position: absolute;
+    top: 20%; left: 50%;
+    width: 100px; height: 100px;
+    background: radial-gradient(circle, rgba(244,63,94,0.4) 0%, rgba(244,63,94,0) 70%);
+    border-radius: 50%;
+  }
+
+  /* Векторни стрелки и геометрия */
+  svg.vectors {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+  }
+
+  /* Индикатор за Производната / Темпото */
+  .tempo-meter {
+    margin-top: 20px;
+    background: #0f172a;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid #334155;
+  }
+
+  .bar-container {
+    height: 12px;
+    background: #f43f5e; /* Черни */
+    border-radius: 6px;
+    overflow: hidden;
+    margin-top: 6px;
+  }
+
+  .bar-fill {
+    height: 100%;
+    width: 62%; /* Контрол на Белите */
+    background: #38bdf8; /* Бели */
+  }
+</style>
+</head>
+<body>
+
+  <h1>VectorChess Python UI</h1>
+  <p class="subtitle">Интерактивна визуализация на геометрични полета и вектори в реално време</p>
+
+  <div class="dashboard">
+
+    <!-- ЛЯВО: Класически борд -->
+    <div class="panel">
+      <div class="panel-title">♟️ Шахматна игра (Input)</div>
+      <div class="chess-board">
+        <!-- Ред 8 -->
+        <div class="square white-sq">♜</div><div class="square black-sq">♞</div><div class="square white-sq">♝</div><div class="square black-sq">♛</div>
+        <div class="square white-sq">♚</div><div class="square black-sq">♝</div><div class="square white-sq">♞</div><div class="square black-sq">♜</div>
+        <!-- Ред 7 -->
+        <div class="square black-sq">♟</div><div class="square white-sq">♟</div><div class="square black-sq">♟</div><div class="square white-sq">♟</div>
+        <div class="square black-sq"></div><div class="square white-sq">♟</div><div class="square black-sq">♟</div><div class="square white-sq">♟</div>
+        <!-- Празни редове с преместена пешка на e4 -->
+        <div class="square white-sq"></div><div class="square black-sq"></div><div class="square white-sq"></div><div class="square black-sq"></div>
+        <div class="square white-sq"></div><div class="square black-sq"></div><div class="square white-sq"></div><div class="square black-sq"></div>
+
+        <div class="square black-sq"></div><div class="square white-sq"></div><div class="square black-sq"></div><div class="square white-sq"></div>
+        <div class="square black-sq">♟</div><div class="square white-sq"></div><div class="square black-sq"></div><div class="square white-sq"></div>
+
+        <div class="square white-sq"></div><div class="square black-sq"></div><div class="square white-sq"></div><div class="square black-sq"></div>
+        <div class="square white-sq">♙</div><div class="square black-sq"></div><div class="square white-sq"></div><div class="square black-sq"></div>
+
+        <div class="square black-sq"></div><div class="square white-sq"></div><div class="square black-sq"></div><div class="square white-sq"></div>
+        <div class="square black-sq"></div><div class="square white-sq"></div><div class="square black-sq"></div><div class="square white-sq"></div>
+
+        <!-- Ред 2 -->
+        <div class="square white-sq">♙</div><div class="square black-sq">♙</div><div class="square white-sq">♙</div><div class="square black-sq">♙</div>
+        <div class="square white-sq"></div><div class="square black-sq">♙</div><div class="square white-sq">♙</div><div class="square black-sq">♙</div>
+        <!-- Ред 1 -->
+        <div class="square black-sq">♖</div><div class="square white-sq">♘</div><div class="square black-sq">♗</div><div class="square white-sq">♕</div>
+        <div class="square black-sq">♔</div><div class="square white-sq">♗</div><div class="square black-sq">♘</div><div class="square white-sq">♖</div>
+      </div>
+    </div>
+
+    <!-- ДЯСНО: Геометрично векторно платно -->
+    <div class="panel">
+      <div class="panel-title">📐 Векторно Поле & Геометрия (Output)</div>
+
+      <div class="vector-field">
+        <!-- Heatmap слоеве -->
+        <div class="heat-zone-white"></div>
+        <div class="heat-zone-black"></div>
+
+        <!-- Векторни линии, пресичания и триъгълници -->
+        <svg class="vectors">
+          <!-- Решетка на координатната система -->
+          <defs>
+            <pattern id="grid" width="50" height="50" patternUnits="userSpaceOnUse">
+              <path d="M 50 0 L 0 0 0 50" fill="none" stroke="#1e293b" stroke-width="1"/>
+            </pattern>
+            <!-- Стрелка за Белите -->
+            <marker id="arrow-white" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#38bdf8"/>
+            </marker>
+            <!-- Стрелка за Черните -->
+            <marker id="arrow-black" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#f43f5e"/>
+            </marker>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#grid)" />
+
+          <!-- Триъгълник на контрол (Бял) -->
+          <polygon points="225,225 125,375 325,375" fill="rgba(56, 189, 248, 0.15)" stroke="#38bdf8" stroke-dasharray="4" />
+
+          <!-- Вектори на Бялата пешка и Офицер (Сини стрелки) -->
+          <line x1="225" y1="275" x2="225" y2="225" stroke="#38bdf8" stroke-width="3" marker-end="url(#arrow-white)" />
+          <line x1="225" y1="225" x2="175" y2="175" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow-white)" />
+          <line x1="225" y1="225" x2="275" y2="175" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow-white)" />
+          <line x1="125" y1="375" x2="275" y2="225" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow-white)" />
+
+          <!-- Вектори на Черните (Червени стрелки) -->
+          <line x1="225" y1="175" x2="175" y2="225" stroke="#f43f5e" stroke-width="2" marker-end="url(#arrow-black)" />
+          <line x1="275" y1="125" x2="225" y2="175" stroke="#f43f5e" stroke-width="3" marker-end="url(#arrow-black)" />
+
+          <!-- Точка на сблъсък / Напрежение в центъра -->
+          <circle cx="225" cy="225" r="8" fill="#eab308" />
+        </svg>
+      </div>
+
+      <!-- Индикатор за Производната / Баланса -->
+      <div class="tempo-meter">
+        <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: #94a3b8;">
+          <span>Контрол Бяло (+1.4 dF/dt)</span>
+          <span>Черно</span>
+        </div>
+        <div class="bar-container">
+          <div class="bar-fill"></div>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+</body>
+</html>
