@@ -7,6 +7,23 @@ from chess_engine.models import (
     MoveAnalysis,
 )
 from console_app.export import export_game_analysis
+from visualization.heatmap_plot import plot_position_analysis
+from visualization.position_plot import plot_position
+from analysis.potential_field import (
+    print_potential_matrix,
+)
+from visualization.potentian_plot import plot_potential_field
+from analysis.gradient_field import (
+    print_gradient_field,
+)
+from visualization.equipotential_plot import (
+    plot_equipotential_field,
+)
+from visualization.gradient_plot import plot_gradient_field
+from visualization.source_potential_plot import (
+    plot_field_comparison,
+)
+
 
 def print_position_analysis(
     analysis: MoveAnalysis,
@@ -80,6 +97,52 @@ def print_position_analysis(
             f"delta=({vector.delta_x}, {vector.delta_y})"
         )
 
+    potential = analysis.potential_field
+
+    print("\n--- Потенциално поле ---")
+
+    print(
+        f"Общ бял потенциал: "
+        f"{potential.total_white_potential:.2f}"
+    )
+
+    print(
+        f"Общ черен потенциал: "
+        f"{potential.total_black_potential:.2f}"
+    )
+
+    print(
+        f"Потенциален баланс: "
+        f"{potential.balance:+.2f}"
+    )
+
+    print(
+        f"Най-силно бяло поле: "
+        f"{potential.strongest_white_square}"
+    )
+
+    print(
+        f"Най-силно черно поле: "
+        f"{potential.strongest_black_square}"
+    )
+
+    print_potential_matrix(potential.matrix)
+
+    print("\n--- Най-силни gradient vectors ---")
+
+    strongest_vectors = sorted(
+        analysis.gradient_field.vectors,
+        key=lambda vector: vector.magnitude,
+        reverse=True,
+    )[:10]
+
+    for vector in strongest_vectors:
+        print(
+            f"{vector.square}: "
+            f"({vector.delta_x:+.2f}, "
+            f"{vector.delta_y:+.2f}), "
+            f"magnitude={vector.magnitude:.2f}"
+        )
 
 def print_dynamics(
     dynamics: DynamicsAnalysis,
@@ -161,8 +224,20 @@ def main() -> None:
     print("VectorChess — Console Analysis")
     print("Въвеждай ходове във формат UCI, например:")
     print("e2e4, e7e5, g1f3")
+    print("board - показва шахматната дъска")
     print("За история напиши: history")
     print("За запис в JSON напиши: export")
+    print("За графична визуализация напиши: plot")
+    print("За potential field визуализация напиши: potential_plot")
+    print("За gradient field визуализация напиши: gradient_plot")
+    print(
+        "За equipotential визуализация "
+        "напиши: equipotential_plot"
+    )
+    print(
+        "За сравнение Attack vs Source Potential "
+        "напиши: source_plot"
+    )
     print("За изход напиши: quit")
 
     while not game.is_game_over():
@@ -176,6 +251,88 @@ def main() -> None:
         if move_text in {"quit", "exit"}:
             print("Играта беше прекратена.")
             return
+
+        if move_text == "plot":
+            if previous_analysis is None:
+                print(
+                    "Все още няма позиция "
+                    "за визуализиране."
+                )
+                continue
+
+            latest_dynamics = (
+                dynamics_history[-1]
+                if dynamics_history
+                else None
+            )
+
+            plot_position(
+                board=game.board,
+                analysis=previous_analysis,
+                dynamics=latest_dynamics,
+            )
+
+            continue
+
+        if move_text == "potential_plot":
+            if previous_analysis is None:
+                print(
+                    "Все още няма позиция "
+                    "за визуализиране."
+                )
+                continue
+
+            plot_potential_field(
+                board=game.board,
+                analysis=previous_analysis,
+            )
+
+            continue
+
+        if move_text == "gradient_plot":
+            if previous_analysis is None:
+                print(
+                    "Все още няма позиция "
+                    "за визуализиране."
+                )
+                continue
+
+            plot_gradient_field(
+                board=game.board,
+                analysis=previous_analysis,
+            )
+
+            continue
+
+        if move_text == "equipotential_plot":
+            if previous_analysis is None:
+                print(
+                    "Все още няма позиция "
+                    "за визуализиране."
+                )
+                continue
+
+            plot_equipotential_field(
+                board=game.board,
+                analysis=previous_analysis,
+            )
+
+            continue
+
+        if move_text == "source_plot":
+            if previous_analysis is None:
+                print(
+                    "Все още няма позиция "
+                    "за визуализиране."
+                )
+                continue
+
+            plot_field_comparison(
+                board=game.board,
+                analysis=previous_analysis,
+            )
+
+            continue
 
         if move_text == "history":
             print_history(
@@ -195,6 +352,14 @@ def main() -> None:
             )
 
             print(f"Анализът беше записан в {output_path}")
+            continue
+
+        if move_text == "plot":
+            if previous_analysis is None:
+                print("Все още няма позиция за визуализиране.")
+                continue
+
+            plot_position_analysis(previous_analysis)
             continue
 
         move_details = game.make_move(move_text)
