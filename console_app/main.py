@@ -6,7 +6,7 @@ from chess_engine.models import (
     DynamicsAnalysis,
     MoveAnalysis,
 )
-from console_app.export import export_game_analysis
+from console_app.export import export_game_analysis, export_move_audio
 from visualization.heatmap_plot import plot_position_analysis
 from visualization.position_plot import plot_position
 from analysis.attack_influence import (
@@ -238,6 +238,10 @@ def main() -> None:
         "За сравнение Attack vs Source Potential "
         "напиши: source_plot"
     )
+    print(
+        "За аудио клип на последния ход "
+        "напиши: audio"
+    )
     print("За изход напиши: quit")
 
     while not game.is_game_over():
@@ -332,6 +336,29 @@ def main() -> None:
                 analysis=previous_analysis,
             )
 
+            continue
+
+        if move_text == "audio":
+            if previous_analysis is None:
+                print(
+                    "Все още няма позиция "
+                    "за визуализиране."
+                )
+                continue
+
+            latest_dynamics = (
+                dynamics_history[-1]
+                if dynamics_history
+                else None
+            )
+
+            output_path = export_move_audio(
+                analysis=previous_analysis,
+                dynamics=latest_dynamics,
+                index=len(analysis_history),
+            )
+
+            print(f"Аудио клипът беше записан в {output_path}")
             continue
 
         if move_text == "history":

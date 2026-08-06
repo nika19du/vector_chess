@@ -2,6 +2,9 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+from audio.export import write_wav
+from audio.mapping import build_audio_mapping
+from audio.renderer import AudioRenderer
 from chess_engine.models import DynamicsAnalysis, MoveAnalysis
 
 
@@ -42,3 +45,30 @@ def export_game_analysis(
         )
 
     return output_path
+
+
+def export_move_audio(
+    analysis: MoveAnalysis,
+    dynamics: DynamicsAnalysis | None,
+    index: int | None = None,
+    file_name: str | None = None,
+) -> Path:
+    """
+    Renders one move's Audio Layer MVP clip and writes it to
+    output/audio/. Move -> AudioMapping -> AudioRenderer -> .wav,
+    per docs/audio.md.
+    """
+
+    output_directory = Path("output") / "audio"
+    output_directory.mkdir(parents=True, exist_ok=True)
+
+    if file_name is None:
+        prefix = f"{index:03d}_" if index is not None else ""
+        file_name = f"{prefix}{analysis.move}.wav"
+
+    output_path = output_directory / file_name
+
+    mapping = build_audio_mapping(analysis, dynamics)
+    clip = AudioRenderer().render(mapping)
+
+    return write_wav(clip, output_path)
