@@ -22,6 +22,12 @@ Audio Layer MVP
 
 ✔
 
+Milestone 4a
+
+Audio MVP Maintenance (checkmate/game-end reachability, batch game audio export)
+
+✔
+
 Milestone 4b
 
 Audio Layer 2

@@ -220,6 +220,19 @@ Measured on a real game: a neutral first move and a `"chaotic"`-labeled move wit
 
 **Accepted as a known MVP limitation, not a blocker.** Not scheduled for change until a deliberate follow-up milestone — see the Growth Strategy in Section 5 and the project's `docs/roadmap.md`.
 
+## Maintenance fix: checkmate/game-end reachability and batch export
+
+**Status: complete.** Tracked as Milestone 4a in `docs/roadmap.md`.
+
+The MVP post-mortem's top-ranked weakness — the final (e.g. checkmating) move's `audio` command being unreachable, because `console_app/main.py`'s REPL loop exits the moment `game.is_game_over()` becomes true, before another command can be typed — is fixed.
+
+`console_app/export.py::export_game_audio` renders every move's clip for the whole game in one call (a thin loop over the existing `export_move_audio`, reusing the pipeline exactly as-is). It's exposed two ways:
+
+- **`export_audio`** — a new console command, usable at any point during a game, mirroring the existing `export` (JSON) command's shape.
+- **Automatically, once the game actually ends** — for *any* `game.is_game_over()` reason (checkmate, stalemate, or otherwise), not checkmate specifically. This fires from the code that already runs right after the REPL loop exits; the loop's own control flow was deliberately left unchanged, so no other command's reachability or behavior is affected, and `quit`/`exit` on an unfinished game still cannot trigger it (that path returns from inside the loop and never reaches this code).
+
+The two paths print distinguishably worded summaries so a user can tell which one happened, and the console's own startup help text now states plainly that ending a game exports every move's clip to `output/audio/` automatically. Regression-tested with a full Scholar's mate sequence (and, separately, a verified fastest-stalemate line) played with no `audio`/`export_audio` command typed at all.
+
 ## Subjective validation is still open
 
 Everything above was verified objectively: unit and integration tests, FFT spectral-peak comparisons (confirming Black's richer timbre shows a clean harmonic series a White clip doesn't), RMS energy measurements, and direct inspection of `AudioMapping` field values. None of this establishes principle 9 from Section 6 — *"could an attentive listener, without seeing the board, learn to recognize a capture, a check, a dominant side, and the difference between a calm and a tense position?"* — because verifying that requires actually listening, which the implementing process has no capability to do.

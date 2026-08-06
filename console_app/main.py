@@ -6,7 +6,11 @@ from chess_engine.models import (
     DynamicsAnalysis,
     MoveAnalysis,
 )
-from console_app.export import export_game_analysis, export_move_audio
+from console_app.export import (
+    export_game_analysis,
+    export_game_audio,
+    export_move_audio,
+)
 from visualization.heatmap_plot import plot_position_analysis
 from visualization.position_plot import plot_position
 from analysis.attack_influence import (
@@ -242,6 +246,15 @@ def main() -> None:
         "За аудио клип на последния ход "
         "напиши: audio"
     )
+    print(
+        "За аудио клипове на цялата партия дотук "
+        "напиши: export_audio"
+    )
+    print(
+        "При край на партията (шах и мат, пат и т.н.) аудио "
+        "клиповете за всички изиграни ходове се записват "
+        "автоматично в output/audio."
+    )
     print("За изход напиши: quit")
 
     while not game.is_game_over():
@@ -381,6 +394,25 @@ def main() -> None:
             print(f"Анализът беше записан в {output_path}")
             continue
 
+        if move_text == "export_audio":
+            if not analysis_history:
+                print("Все още няма анализ за озвучаване.")
+                continue
+
+            output_paths = export_game_audio(
+                analysis_history=analysis_history,
+                dynamics_history=dynamics_history,
+            )
+
+            output_directory = output_paths[0].parent
+
+            print(
+                f"Аудио файловете за партията бяха записани в "
+                f"{output_directory} ({len(output_paths)} файла)."
+            )
+
+            continue
+
         if move_text == "plot":
             if previous_analysis is None:
                 print("Все още няма позиция за визуализиране.")
@@ -424,6 +456,28 @@ def main() -> None:
 
     print("\nИграта приключи.")
     print(f"Резултат: {game.board.result()}")
+
+    # The while loop above only exits this way after at least one move
+    # has been played and appended -- the quit/exit branch returns
+    # directly from inside the loop and never reaches this code, so
+    # this never fires just from quitting an unfinished game. This is
+    # the fix for the final (e.g. checkmating) move's audio otherwise
+    # being unreachable: the REPL loop itself is intentionally left
+    # unchanged, and every move's clip -- including the last one -- is
+    # exported here instead, once the game is actually over.
+    if analysis_history:
+        output_paths = export_game_audio(
+            analysis_history=analysis_history,
+            dynamics_history=dynamics_history,
+        )
+
+        output_directory = output_paths[0].parent
+
+        print(
+            f"Играта приключи — аудио клиповете за цялата партия "
+            f"бяха автоматично записани в {output_directory} "
+            f"({len(output_paths)} файла)."
+        )
 
     print_history(
         analysis_history=analysis_history,
