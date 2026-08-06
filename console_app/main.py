@@ -3,6 +3,9 @@ from analysis.attacker_count import print_heatmap
 from chess_engine.analyzer import analyze_position
 from chess_engine.board import ChessGame
 from chess_engine.models import (
+    ClassifiedCriticalPoint,
+    CriticalPointCandidate,
+    CriticalPointQualityAssessment,
     DynamicsAnalysis,
     MoveAnalysis,
 )
@@ -16,10 +19,14 @@ from visualization.position_plot import plot_position
 from analysis.attack_influence import (
     print_attack_influence_matrix,
 )
+from analysis.attack_influence_surface import build_attack_influence_surface
+from analysis.critical_point_quality import assess_critical_point_quality
+from analysis.critical_points import classify_critical_points, locate_critical_points
 from visualization.attack_influence_plot import plot_attack_influence_field
 from analysis.gradient_field import (
     print_gradient_field,
 )
+from visualization.critical_points_plot import plot_critical_points
 from visualization.equipotential_plot import (
     plot_equipotential_field,
 )
@@ -217,6 +224,89 @@ def print_history(
         )
 
 
+# Групиране на причини за отхвърляне по КАТЕГОРИЯ (не по точния низ
+# с конкретните числа във всяка причина -- иначе почти всяка причина
+# би била уникална и "групирано" резюме не би било компактно).
+# Съответства едно-към-едно на префиксите, генерирани от
+# analysis/critical_point_quality.py.
+REJECTION_REASON_CATEGORIES: list[tuple[str, str]] = [
+    ("not a converged critical point", "Newton не е сходил"),
+    ("too close to board boundary", "твърде близо до ръба на дъската"),
+    ("degenerate classification", "изродена (degenerate) класификация"),
+    (
+        "weak curvature in at least one principal direction",
+        "слаба кривина в поне една посока",
+    ),
+    ("overall curvature too weak", "цялостно твърде слаба кривина"),
+    (
+        "gradient norm above the requested quality threshold",
+        "градиентът е над зададения праг за качество",
+    ),
+]
+
+
+def categorize_rejection_reason(
+    reason: str,
+) -> str:
+    for prefix, category_label in REJECTION_REASON_CATEGORIES:
+        if reason.startswith(prefix):
+            return category_label
+
+    return reason
+
+
+def print_critical_points_summary(
+    candidates: list[CriticalPointCandidate],
+    classified_points: list[ClassifiedCriticalPoint],
+    assessments: list[CriticalPointQualityAssessment],
+) -> None:
+    """
+    Компактно резюме на изхода на критичните точки -- НЕ преизчислява
+    нищо, само отчита вече готовите резултати от
+    analysis/critical_points.py и analysis/critical_point_quality.py.
+    """
+
+    classified_count = sum(
+        1
+        for point in classified_points
+        if point.classification != "unclassified"
+    )
+
+    accepted_count = sum(
+        1 for assessment in assessments if assessment.is_accepted
+    )
+
+    rejected_count = len(assessments) - accepted_count
+
+    print("\n--- Критични точки ---")
+    print(f"Открити кандидати (Newton): {len(candidates)}")
+    print(f"Класифицирани (сходили): {classified_count}")
+    print(f"Приети (надеждни): {accepted_count}")
+    print(f"Отхвърлени: {rejected_count}")
+
+    if rejected_count == 0:
+        return
+
+    reason_counts: dict[str, int] = {}
+
+    for assessment in assessments:
+        if assessment.is_accepted:
+            continue
+
+        category_label = categorize_rejection_reason(
+            assessment.rejection_reasons[0]
+        )
+
+        reason_counts[category_label] = (
+            reason_counts.get(category_label, 0) + 1
+        )
+
+    print("Причини за отхвърляне:")
+
+    for category_label, count in reason_counts.items():
+        print(f"  {category_label}: {count}")
+
+
 def main() -> None:
     game = ChessGame()
 
@@ -241,6 +331,10 @@ def main() -> None:
     print(
         "За сравнение Attack vs Source Potential "
         "напиши: source_plot"
+    )
+    print(
+        "За критични точки (maximum/minimum/saddle) "
+        "напиши: critical_points_plot"
     )
     print(
         "За аудио клип на последния ход "
@@ -345,6 +439,39 @@ def main() -> None:
                 continue
 
             plot_field_comparison(
+                board=game.board,
+                analysis=previous_analysis,
+            )
+
+            continue
+
+        if move_text == "critical_points_plot":
+            if previous_analysis is None:
+                print(
+                    "Все още няма позиция "
+                    "за визуализиране."
+                )
+                continue
+
+            surface = build_attack_influence_surface(
+                previous_analysis.attack_influence_field
+            )
+
+            candidates = locate_critical_points(surface)
+            classified_points = classify_critical_points(
+                candidates, surface
+            )
+            assessments = assess_critical_point_quality(
+                classified_points, surface
+            )
+
+            print_critical_points_summary(
+                candidates=candidates,
+                classified_points=classified_points,
+                assessments=assessments,
+            )
+
+            plot_critical_points(
                 board=game.board,
                 analysis=previous_analysis,
             )

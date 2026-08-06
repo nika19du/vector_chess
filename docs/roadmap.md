@@ -42,12 +42,18 @@ Interactive UI
 
 Milestone 6
 
-Critical Points
+Critical Point Detection & Hessian Classification (merged from the originally separate "Critical Points" / "Hessian" entries -- classification via the second-derivative test is not a separable concept from detection). Phases: mathematical design note (docs/mathematics.md, Section 9), regression tests for AttackInfluenceSurface, Hessian evaluation, Newton localization, classification, post-classification quality filtering (analysis/critical_point_quality.py), visualization (visualization/critical_points_plot.py), console integration (critical_points_plot command).
 
-...
+✔
 
 Milestone 7
 
-Hessian
+Ridge / Valley Analysis
+
+...
+
+Milestone 8
+
+Morse-Smale Complex
 
 ...

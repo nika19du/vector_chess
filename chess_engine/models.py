@@ -183,6 +183,160 @@ class AttackInfluenceSurface:
 
 
 @dataclass
+class HessianField:
+    """
+    Матрицата на вторите частни производни (Hessian) на
+    AttackInfluenceSurface, оценена върху нейната собствена
+    гъста мрежа (surface.y, surface.x) -- същата мрежа, върху
+    която работи и sample_gradient.
+
+    f_xx, f_yy:
+        чисти втори производни (кривина по колона/файл,
+        съответно по ред/ранг), взети директно от bicubic
+        сплайна.
+
+    f_xy, f_yx:
+        смесената производна ∂²φ/∂x∂y, изчислена по два
+        независими пътя (диференциране на ∂φ/∂y спрямо x,
+        и диференциране на ∂φ/∂x спрямо y) -- не се приема
+        предварително, че си съвпадат по теоремата на Клеро,
+        а се проверява числено.
+
+    Не локализира и не класифицира критични точки -- само
+    оценява H(x, y) навсякъде по мрежата. Виж
+    analysis/critical_points.py и docs/mathematics.md,
+    Раздел 9.
+    """
+
+    f_xx: np.ndarray
+    f_xy: np.ndarray
+    f_yx: np.ndarray
+    f_yy: np.ndarray
+
+
+@dataclass
+class CriticalPointCandidate:
+    """
+    Резултат от Newton локализация на един кандидат за критична
+    точка върху AttackInfluenceSurface -- НЕ е класифициран
+    (максимум/минимум/седло); класификацията е следваща фаза.
+    Виж analysis/critical_points.py и docs/mathematics.md, Раздел 9.
+
+    x, y:
+        крайната позиция в екранни координати -- напасната директно
+        върху непрекъснатия сплайн, не е ограничена до възлите на
+        дискретната мрежа.
+
+    value:
+        стойността на повърхността в тази точка.
+
+    gradient_norm:
+        |∇φ| в крайната точка -- колко близо е тя до истинско ∇φ=0.
+
+    status:
+        "converged" -- |∇φ| падна под прага за сходимост.
+        "max_iterations_reached" -- изчерпан бюджет от Newton стъпки.
+        "singular_hessian" -- Hessian-ът е сингулярен или зле
+            обусловен в текущата точка; итерацията спира там, вместо
+            да раздели с почти нулев детерминант.
+        "left_domain" -- следващата Newton стъпка би напуснала
+            валидния диапазон на дъската; итерацията спира на
+            последната валидна точка вместо да я приема.
+
+    iterations:
+        брой извършени Newton стъпки преди спиране.
+    """
+
+    x: float
+    y: float
+    value: float
+    gradient_norm: float
+    status: str
+    iterations: int
+
+
+@dataclass
+class ClassifiedCriticalPoint:
+    """
+    Класифициран резултат от analysis.critical_points, обвиващ
+    CriticalPointCandidate с типа му (максимум/минимум/седло) и
+    Hessian-а, използван за да се стигне до него -- за пълна
+    проследимост. Виж docs/mathematics.md, Раздел 9.
+
+    x, y, value, gradient_norm, status, iterations:
+        запазени непроменени от оригиналния CriticalPointCandidate --
+        класификацията никога не пренаписва локализационните метаданни.
+
+    f_xx, f_xy, f_yx, f_yy:
+        стойностите на Hessian-а точно в (x, y), взети чрез
+        evaluate_hessian_at_points -- None, ако status != "converged"
+        (Hessian не се оценява в некон converged точка).
+
+    eigenvalue_min, eigenvalue_max:
+        собствените числа на симетризирания Hessian
+        ([[f_xx, mixed], [mixed, f_yy]], mixed = (f_xy+f_yx)/2),
+        подредени числово (eigenvalue_min <= eigenvalue_max) --
+        None при status != "converged".
+
+    classification:
+        "maximum"      -- eigenvalue_max < 0 (двете отрицателни).
+        "minimum"      -- eigenvalue_min > 0 (двете положителни).
+        "saddle"       -- различни знаци.
+        "degenerate"   -- собствено число ~0 ИЛИ f_xy/f_yx не
+                          съвпадат в рамките на HESSIAN_SYMMETRY_TOLERANCE
+                          -- тестът е недостоверен, отчита се честно
+                          вместо да се гадае.
+        "unclassified" -- кандидатът не е "converged"; няма смисъл
+                          да се класифицира точка, която не е
+                          истинска критична точка.
+    """
+
+    x: float
+    y: float
+    value: float
+    gradient_norm: float
+    status: str
+    iterations: int
+
+    f_xx: float | None
+    f_xy: float | None
+    f_yx: float | None
+    f_yy: float | None
+
+    eigenvalue_min: float | None
+    eigenvalue_max: float | None
+
+    classification: str
+
+
+@dataclass
+class CriticalPointQualityAssessment:
+    """
+    Обвива ClassifiedCriticalPoint с преценка за качество -- НЕ
+    променя локализацията или класификацията. Единствената цел е да
+    раздели "математически открита критична точка на напаснатия
+    сплайн" от "точка, достатъчно надеждна, за да се представи като
+    шахматно значима". Виж analysis/critical_point_quality.py и
+    docs/mathematics.md, Раздел 9.
+
+    point:
+        оригиналният ClassifiedCriticalPoint, напълно непроменен.
+
+    is_accepted:
+        True само ако точката премине всички приложени критерии.
+
+    rejection_reasons:
+        ВСИЧКИ провалени критерии, четимо описани -- никога само
+        "първата причина", за да не се скрие информация. Празен
+        списък точно когато is_accepted е True.
+    """
+
+    point: ClassifiedCriticalPoint
+    is_accepted: bool
+    rejection_reasons: list[str]
+
+
+@dataclass
 class SourcePotentialSurface:
     """
     Непрекъснатото Φ_source(x, y), генерирано чрез директно
