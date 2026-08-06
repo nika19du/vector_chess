@@ -1,5 +1,5 @@
 from analysis.dynamics import analyze_dynamics
-from analysis.heatmap import print_heatmap
+from analysis.attacker_count import print_heatmap
 from chess_engine.analyzer import analyze_position
 from chess_engine.board import ChessGame
 from chess_engine.models import (
@@ -9,10 +9,10 @@ from chess_engine.models import (
 from console_app.export import export_game_analysis
 from visualization.heatmap_plot import plot_position_analysis
 from visualization.position_plot import plot_position
-from analysis.potential_field import (
-    print_potential_matrix,
+from analysis.attack_influence import (
+    print_attack_influence_matrix,
 )
-from visualization.potentian_plot import plot_potential_field
+from visualization.attack_influence_plot import plot_attack_influence_field
 from analysis.gradient_field import (
     print_gradient_field,
 )
@@ -36,18 +36,18 @@ def print_position_analysis(
     print(f"Вземане: {'да' if analysis.is_capture else 'не'}")
     print(f"Шах: {'да' if analysis.is_check else 'не'}")
 
-    print("\n--- Контрол ---")
+    print("\n--- Мобилност ---")
     print(
-        f"Белите контролират: "
-        f"{analysis.control.white_controlled_squares} полета"
+        f"Белите достигат: "
+        f"{analysis.mobility.white_reachable_squares} полета"
     )
     print(
-        f"Черните контролират: "
-        f"{analysis.control.black_controlled_squares} полета"
+        f"Черните достигат: "
+        f"{analysis.mobility.black_reachable_squares} полета"
     )
-    print(f"Разлика: {analysis.control.difference:+d}")
+    print(f"Разлика: {analysis.mobility.difference:+d}")
 
-    print_heatmap(analysis.heatmap)
+    print_heatmap(analysis.attacker_count_field.matrix)
 
     print("\n--- Центрове на контрол ---")
 
@@ -97,36 +97,36 @@ def print_position_analysis(
             f"delta=({vector.delta_x}, {vector.delta_y})"
         )
 
-    potential = analysis.potential_field
+    attack_influence = analysis.attack_influence_field
 
-    print("\n--- Потенциално поле ---")
+    print("\n--- Атаково влияние ---")
 
     print(
-        f"Общ бял потенциал: "
-        f"{potential.total_white_potential:.2f}"
+        f"Общо бяло атаково влияние: "
+        f"{attack_influence.total_white_attack_influence:.2f}"
     )
 
     print(
-        f"Общ черен потенциал: "
-        f"{potential.total_black_potential:.2f}"
+        f"Общо черно атаково влияние: "
+        f"{attack_influence.total_black_attack_influence:.2f}"
     )
 
     print(
-        f"Потенциален баланс: "
-        f"{potential.balance:+.2f}"
+        f"Баланс на атаковото влияние: "
+        f"{attack_influence.balance:+.2f}"
     )
 
     print(
         f"Най-силно бяло поле: "
-        f"{potential.strongest_white_square}"
+        f"{attack_influence.strongest_white_square}"
     )
 
     print(
         f"Най-силно черно поле: "
-        f"{potential.strongest_black_square}"
+        f"{attack_influence.strongest_black_square}"
     )
 
-    print_potential_matrix(potential.matrix)
+    print_attack_influence_matrix(attack_influence.matrix)
 
     print("\n--- Най-силни gradient vectors ---")
 
@@ -160,12 +160,12 @@ def print_dynamics(
     print(f"ΔF: {dynamics.delta_force:+d}")
 
     print(
-        f"Промяна в белия контрол: "
-        f"{dynamics.white_control_delta:+d}"
+        f"Промяна в бялата мобилност: "
+        f"{dynamics.white_mobility_delta:+d}"
     )
     print(
-        f"Промяна в черния контрол: "
-        f"{dynamics.black_control_delta:+d}"
+        f"Промяна в черната мобилност: "
+        f"{dynamics.black_mobility_delta:+d}"
     )
     print(
         f"Промяна в броя вектори: "
@@ -228,7 +228,7 @@ def main() -> None:
     print("За история напиши: history")
     print("За запис в JSON напиши: export")
     print("За графична визуализация напиши: plot")
-    print("За potential field визуализация напиши: potential_plot")
+    print("За attack influence field визуализация напиши: attack_influence_plot")
     print("За gradient field визуализация напиши: gradient_plot")
     print(
         "За equipotential визуализация "
@@ -274,7 +274,7 @@ def main() -> None:
 
             continue
 
-        if move_text == "potential_plot":
+        if move_text == "attack_influence_plot":
             if previous_analysis is None:
                 print(
                     "Все още няма позиция "
@@ -282,7 +282,7 @@ def main() -> None:
                 )
                 continue
 
-            plot_potential_field(
+            plot_attack_influence_field(
                 board=game.board,
                 analysis=previous_analysis,
             )

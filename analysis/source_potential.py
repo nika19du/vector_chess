@@ -1,6 +1,7 @@
 import chess
 import numpy as np
 
+from analysis.geometry import square_to_plot_coords
 from chess_engine.models import SourceField, SourcePotentialSurface
 
 
@@ -55,7 +56,8 @@ def extract_source_points(
     """
     Извлича (x, y, q) за всяка непразна клетка на ρ, в същите
     екранни координати като останалата визуализация
-    (x = файл + 0.5, y = (7 - rank) + 0.5).
+    (виж analysis.geometry.square_to_plot_coords; x = файл + 0.5,
+    y = плоскостно y на клетката + 0.5).
 
     Никакво позоваване на board.attackers() или геометрия на
     ходовете — само позиция и знакова маса.
@@ -69,8 +71,9 @@ def extract_source_points(
 
         square = chess.parse_square(cell.square)
 
-        x = chess.square_file(square) + 0.5
-        y = (7 - chess.square_rank(square)) + 0.5
+        plot_x, plot_y = square_to_plot_coords(square)
+        x = plot_x + 0.5
+        y = plot_y + 0.5
 
         points.append((x, y, cell.difference))
 

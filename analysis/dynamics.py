@@ -33,23 +33,23 @@ def analyze_dynamics(
     """
     Сравнява две последователни шахматни позиции
 
-    F = white_control - black_control
+    F = white_mobility - black_mobility
     delta F = f_current - f_previous
     """
 
-    previous_force = previous.control.difference
-    current_force = current.control.difference
+    previous_force = previous.mobility.difference
+    current_force = current.mobility.difference
 
     delta_force = current_force - previous_force
 
-    white_control_delta = (
-        current.control.white_controlled_squares
-        - previous.control.white_controlled_squares
+    white_mobility_delta = (
+        current.mobility.white_reachable_squares
+        - previous.mobility.white_reachable_squares
     )
 
-    black_control_delta = (
-        current.control.black_controlled_squares
-        - previous.control.black_controlled_squares
+    black_mobility_delta = (
+        current.mobility.black_reachable_squares
+        - previous.mobility.black_reachable_squares
     )
 
     attack_vectors_delta = (
@@ -58,14 +58,14 @@ def analyze_dynamics(
     )
 
     heatmap_change = calculate_heatmap_change(
-        previous_heatmap=previous.heatmap,
-        current_heatmap=current.heatmap
+        previous_heatmap=previous.attacker_count_field.matrix,
+        current_heatmap=current.attacker_count_field.matrix
     )
 
     intensity = (
         abs(delta_force)
-        + abs(white_control_delta)
-        + abs(black_control_delta)
+        + abs(white_mobility_delta)
+        + abs(black_mobility_delta)
         + abs(attack_vectors_delta) * 0.5
         + heatmap_change * 0.25
     )
@@ -83,8 +83,8 @@ def analyze_dynamics(
         previous_force=previous_force,
         current_force=current_force,
         delta_force=delta_force,
-        white_control_delta=white_control_delta,
-        black_control_delta=black_control_delta,
+        white_mobility_delta=white_mobility_delta,
+        black_mobility_delta=black_mobility_delta,
         attack_vectors_delta = attack_vectors_delta,
         heatmap_change=heatmap_change,
         intensity=intensity,

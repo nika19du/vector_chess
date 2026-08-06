@@ -4,6 +4,11 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.colors import Normalize
 
+from analysis.geometry import (
+    math_coords_to_matrix_rc,
+    math_to_plot_coords,
+    square_to_plot_coords,
+)
 from chess_engine.models import GradientVector, MoveAnalysis
 
 
@@ -39,7 +44,7 @@ MIN_MAGNITUDE = 1.5
 # на което има шахматна фигура.
 SHOW_VECTORS_ON_PIECES = False
 
-POTENTIAL_ALPHA = 0.68
+ATTACK_INFLUENCE_ALPHA = 0.68
 
 # Минимална и максимална дължина на стрелката
 # в единици от една шахматна клетка.
@@ -52,10 +57,10 @@ def plot_gradient_field(
     analysis: MoveAnalysis,
 ) -> None:
     """
-    Рисува потенциалното поле и неговия градиент.
+    Рисува полето на атаково влияние и неговия градиент.
 
     Всяка стрелка сочи към посоката, в която
-    потенциалът на Белите спрямо Черните
+    атаковото влияние на Белите спрямо Черните
     нараства най-бързо.
     """
 
@@ -63,7 +68,7 @@ def plot_gradient_field(
 
     draw_board_background(axes)
 
-    potential_image = draw_potential_overlay(
+    attack_influence_image = draw_attack_influence_overlay(
         axes=axes,
         analysis=analysis,
     )
@@ -86,14 +91,14 @@ def plot_gradient_field(
     )
 
     colorbar = figure.colorbar(
-        potential_image,
+        attack_influence_image,
         ax=axes,
         fraction=0.046,
         pad=0.04,
     )
 
     colorbar.set_label(
-        "Black potential  ←  balance  →  White potential"
+        "Black attack influence  ←  balance  →  White attack influence"
     )
 
     figure.tight_layout()
@@ -129,14 +134,14 @@ def draw_board_background(
             )
 
 
-def draw_potential_overlay(
+def draw_attack_influence_overlay(
     axes: Axes,
     analysis: MoveAnalysis,
 ):
-    """Рисува Potential Field като полупрозрачен фон."""
+    """Рисува Attack Influence Field като полупрозрачен фон."""
 
     matrix = np.array(
-        analysis.potential_field.matrix,
+        analysis.attack_influence_field.matrix,
         dtype=float,
     )
 
@@ -155,7 +160,7 @@ def draw_potential_overlay(
         extent=(0, 8, 8, 0),
         cmap="RdBu_r",
         norm=normalization,
-        alpha=POTENTIAL_ALPHA,
+        alpha=ATTACK_INFLUENCE_ALPHA,
         interpolation="nearest",
         zorder=2,
     )
@@ -236,8 +241,9 @@ def draw_single_gradient_vector(
     if vector.magnitude <= 0:
         return
 
-    center_x = vector.x + 0.5
-    center_y = 7 - vector.y + 0.5
+    plot_x, plot_y = math_to_plot_coords(vector.x, vector.y)
+    center_x = plot_x + 0.5
+    center_y = plot_y + 0.5
 
     unit_x = (
         vector.delta_x / vector.magnitude
@@ -306,14 +312,15 @@ def get_contrasting_arrow_color(
 ) -> str:
     """
     Избира светла или тъмна стрелка според
-    локалната стойност на Potential Field.
+    локалната стойност на Attack Influence Field.
     """
 
-    matrix_row = 7 - vector.y
-    matrix_column = vector.x
+    matrix_row, matrix_column = math_coords_to_matrix_rc(
+        vector.x, vector.y
+    )
 
-    local_potential = (
-        analysis.potential_field.matrix
+    local_attack_influence = (
+        analysis.attack_influence_field.matrix
         [matrix_row][matrix_column]
     )
 
@@ -321,13 +328,13 @@ def get_contrasting_arrow_color(
         1.0,
         max(
             abs(value)
-            for row in analysis.potential_field.matrix
+            for row in analysis.attack_influence_field.matrix
             for value in row
         ),
     )
 
     relative_background_strength = (
-        abs(local_potential)
+        abs(local_attack_influence)
         / max_absolute_value
     )
 
@@ -345,8 +352,7 @@ def draw_pieces(
     """Рисува шахматните фигури над останалите слоеве."""
 
     for square, piece in board.piece_map().items():
-        x = chess.square_file(square)
-        y = 7 - chess.square_rank(square)
+        x, y = square_to_plot_coords(square)
 
         symbol = UNICODE_PIECES[piece.symbol()]
 
@@ -369,7 +375,7 @@ def configure_axes(
 ) -> None:
     """Настройва координатите и заглавието."""
 
-    potential = analysis.potential_field
+    attack_influence = analysis.attack_influence_field
     gradient = analysis.gradient_field
 
     axes.set_xlim(0, 8)
@@ -392,7 +398,7 @@ def configure_axes(
     axes.set_title(
         "VectorChess Gradient Field\n"
         f"Move: {analysis.move} | "
-        f"Potential balance: {potential.balance:+.2f}\n"
+        f"Attack influence balance: {attack_influence.balance:+.2f}\n"
         f"Max gradient: {gradient.max_magnitude:.2f} | "
         f"Visible vectors: {visible_vectors_count}",
         pad=16,

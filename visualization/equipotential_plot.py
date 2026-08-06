@@ -4,8 +4,9 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.colors import Normalize
 
-from analysis.field_reconstruction import build_potential_surface
-from chess_engine.models import MoveAnalysis, PotentialSurface
+from analysis.attack_influence_surface import build_attack_influence_surface
+from analysis.geometry import square_to_plot_coords
+from chess_engine.models import AttackInfluenceSurface, MoveAnalysis
 
 
 UNICODE_PIECES = {
@@ -24,7 +25,7 @@ UNICODE_PIECES = {
 }
 
 
-POTENTIAL_ALPHA = 0.72
+ATTACK_INFLUENCE_ALPHA = 0.72
 
 CONTOUR_LEVEL_COUNT = 13
 
@@ -38,9 +39,9 @@ def plot_equipotential_field(
     analysis: MoveAnalysis,
 ) -> None:
     """
-    Рисува еквипотенциалните линии на Potential Field.
+    Рисува еквипотенциалните линии на Attack Influence Field.
 
-    Всяка линия свързва точки с еднакъв потенциал — същият
+    Всяка линия свързва точки с еднакво атаково влияние — същият
     принцип като изобарите на карта на атмосферното налягане.
     Полето е математически консервативно (градиент на скаларен
     потенциал), затова еквипотенциалните линии, а не flow paths,
@@ -49,8 +50,8 @@ def plot_equipotential_field(
 
     figure, axes = plt.subplots(figsize=(10, 10))
 
-    surface = build_potential_surface(
-        analysis.potential_field
+    surface = build_attack_influence_surface(
+        analysis.attack_influence_field
     )
 
     max_absolute_value = max(
@@ -66,7 +67,7 @@ def plot_equipotential_field(
 
     draw_board_background(axes)
 
-    filled_contours = draw_potential_surface(
+    filled_contours = draw_attack_influence_surface(
         axes=axes,
         surface=surface,
         levels=levels,
@@ -97,7 +98,7 @@ def plot_equipotential_field(
     )
 
     colorbar.set_label(
-        "Black potential  ←  balance  →  White potential"
+        "Black attack influence  ←  balance  →  White attack influence"
     )
 
     figure.tight_layout()
@@ -131,9 +132,9 @@ def draw_board_background(
             )
 
 
-def draw_potential_surface(
+def draw_attack_influence_surface(
     axes: Axes,
-    surface: PotentialSurface,
+    surface: AttackInfluenceSurface,
     levels: np.ndarray,
     max_absolute_value: float,
 ):
@@ -149,14 +150,14 @@ def draw_potential_surface(
         levels=levels,
         cmap="RdBu_r",
         norm=normalization,
-        alpha=POTENTIAL_ALPHA,
+        alpha=ATTACK_INFLUENCE_ALPHA,
         zorder=2,
     )
 
 
 def draw_equipotential_lines(
     axes: Axes,
-    surface: PotentialSurface,
+    surface: AttackInfluenceSurface,
     levels: np.ndarray,
 ) -> None:
     contour_set = axes.contour(
@@ -183,8 +184,7 @@ def draw_pieces(
     board: chess.Board,
 ) -> None:
     for square, piece in board.piece_map().items():
-        x = chess.square_file(square)
-        y = 7 - chess.square_rank(square)
+        x, y = square_to_plot_coords(square)
 
         symbol = UNICODE_PIECES[piece.symbol()]
 
@@ -204,7 +204,7 @@ def configure_axes(
     axes: Axes,
     analysis: MoveAnalysis,
 ) -> None:
-    potential = analysis.potential_field
+    attack_influence = analysis.attack_influence_field
 
     axes.set_xlim(0, 8)
     axes.set_ylim(8, 0)
@@ -226,8 +226,8 @@ def configure_axes(
     axes.set_title(
         "VectorChess Equipotential Field\n"
         f"Move: {analysis.move} | "
-        f"Potential balance: {potential.balance:+.2f}\n"
-        f"White peak: {potential.strongest_white_square} | "
-        f"Black peak: {potential.strongest_black_square}",
+        f"Attack influence balance: {attack_influence.balance:+.2f}\n"
+        f"White peak: {attack_influence.strongest_white_square} | "
+        f"Black peak: {attack_influence.strongest_black_square}",
         pad=16,
     )

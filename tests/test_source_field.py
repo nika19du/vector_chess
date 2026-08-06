@@ -1,7 +1,7 @@
 import chess
 
-from analysis.potential_field import PIECE_WEIGHTS
-from analysis.potential_field import build_potential_matrix, build_potential_cells
+from analysis.attack_influence import PIECE_WEIGHTS
+from analysis.attack_influence import build_attack_influence_matrix, build_attack_influence_cells
 from analysis.source_field import build_source_field, build_source_matrix, build_source_cells
 
 
@@ -80,10 +80,10 @@ def test_single_piece_mass_is_localized_and_signed():
     assert nonzero_cells[0].black_mass == 0.0
 
 
-def test_matrix_coordinate_convention_matches_potential_field():
+def test_matrix_coordinate_convention_matches_attack_influence_field():
     """
     build_source_matrix must lay out rows/columns exactly like
-    build_potential_matrix (row 0 = rank 8, column 0 = file a),
+    build_attack_influence_matrix (row 0 = rank 8, column 0 = file a),
     so the two fields stay directly comparable square-for-square.
     """
 
@@ -92,11 +92,11 @@ def test_matrix_coordinate_convention_matches_potential_field():
     board.push_san("e5")
     board.push_san("Nf3")
 
-    # build_potential_matrix / build_potential_cells are imported
-    # only to confirm both modules agree on an 8x8, list-of-lists
+    # build_attack_influence_matrix / build_attack_influence_cells are
+    # imported only to confirm both modules agree on an 8x8, list-of-lists
     # shape; the actual convention check is done via a known piece
     # placement below.
-    assert len(build_potential_matrix(build_potential_cells(board))) == 8
+    assert len(build_attack_influence_matrix(build_attack_influence_cells(board))) == 8
 
     source_matrix = build_source_matrix(
         build_source_cells(board)

@@ -1,6 +1,8 @@
 import chess
 import matplotlib.pyplot as plt
 
+from analysis.geometry import square_to_plot_coords
+
 
 UNICODE_PIECES = {
     "P": "♙",
@@ -41,8 +43,7 @@ def plot_board(board: chess.Board):
     # фигурите
     for square, piece in board.piece_map().items():
 
-        x = chess.square_file(square)
-        y = 7 - chess.square_rank(square)
+        x, y = square_to_plot_coords(square)
 
         symbol = UNICODE_PIECES[piece.symbol()]
 

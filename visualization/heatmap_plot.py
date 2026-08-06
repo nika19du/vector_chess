@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
+from analysis.geometry import math_to_plot_coords
 from chess_engine.models import MoveAnalysis
 
 
@@ -9,13 +10,13 @@ def plot_position_analysis(
 ) -> None:
     """
     Визуализира:
-    - control heatmap;
+    - attacker count heatmap;
     - центъра на белия контрол;
     - центъра на черния контрол;
     - глобалния вектор между двата центъра.
     """
 
-    heatmap = np.array(analysis.heatmap)
+    heatmap = np.array(analysis.attacker_count_field.matrix)
 
     figure, axes = plt.subplots(figsize=(8, 8))
 
@@ -28,7 +29,7 @@ def plot_position_analysis(
     figure.colorbar(
         image,
         ax=axes,
-        label="White control - Black control",
+        label="White attacker count - Black attacker count",
     )
 
     axes.set_xticks(range(8))
@@ -41,7 +42,7 @@ def plot_position_analysis(
     axes.set_ylabel("Rank")
 
     axes.set_title(
-        f"VectorChess control field after {analysis.move}"
+        f"VectorChess attacker count field after {analysis.move}"
     )
 
     # Показваме числената стойност във всяка клетка.
@@ -62,7 +63,7 @@ def plot_position_analysis(
 
         # Heatmap матрицата е обърната вертикално:
         # ред 8 е на индекс 0, а ред 1 е на индекс 7.
-        plotted_white_y = 7 - white_y
+        _, plotted_white_y = math_to_plot_coords(white_x, white_y)
 
         axes.scatter(
             white_x,
@@ -74,7 +75,7 @@ def plot_position_analysis(
 
     if analysis.black_center is not None:
         black_x, black_y = analysis.black_center
-        plotted_black_y = 7 - black_y
+        _, plotted_black_y = math_to_plot_coords(black_x, black_y)
 
         axes.scatter(
             black_x,
@@ -88,10 +89,10 @@ def plot_position_analysis(
         vector = analysis.control_vector
 
         start_x = vector.start_x
-        start_y = 7 - vector.start_y
+        _, start_y = math_to_plot_coords(vector.start_x, vector.start_y)
 
         end_x = vector.end_x
-        end_y = 7 - vector.end_y
+        _, end_y = math_to_plot_coords(vector.end_x, vector.end_y)
 
         axes.annotate(
             "",

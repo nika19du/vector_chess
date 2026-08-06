@@ -4,7 +4,7 @@ import chess
 import numpy as np
 import pytest
 
-from analysis.potential_field import PIECE_WEIGHTS
+from analysis.attack_influence import PIECE_WEIGHTS
 from analysis.source_field import build_source_field
 from analysis.source_potential import (
     build_source_potential_surface,
@@ -191,7 +191,7 @@ def test_blocker_independence_does_not_change_rooks_contribution():
     blocking or ray-casting at all.
     """
 
-    from analysis.potential_field import build_potential_field
+    from analysis.attack_influence import build_attack_influence_field
 
     open_file_board = chess.Board(None)
     open_file_board.set_piece_at(chess.A1, chess.Piece(chess.ROOK, chess.WHITE))
@@ -206,10 +206,10 @@ def test_blocker_independence_does_not_change_rooks_contribution():
 
     # Control check: the Attack Influence Field DOES change at a8
     # once the file is blocked (existing, expected behavior).
-    open_potential = build_potential_field(open_file_board)
-    blocked_potential = build_potential_field(blocked_file_board)
+    open_attack_influence = build_attack_influence_field(open_file_board)
+    blocked_attack_influence = build_attack_influence_field(blocked_file_board)
 
-    assert open_potential.matrix != blocked_potential.matrix
+    assert open_attack_influence.matrix != blocked_attack_influence.matrix
 
     # The actual test: the rook's OWN contribution to Phi_source is
     # identical whether or not the pawn blocks its line of sight.

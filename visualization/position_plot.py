@@ -6,6 +6,7 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.colors import Normalize
 
+from analysis.geometry import math_to_plot_coords, square_to_plot_coords
 from chess_engine.models import (
     AttackVector,
     DynamicsAnalysis,
@@ -63,7 +64,7 @@ def plot_position(
     Визуализира шахматната позиция като многослоен модел:
 
     1. шахматна дъска;
-    2. heatmap на контрола;
+    2. heatmap на броя атакуващи;
     3. локални вектори на влияние;
     4. шахматни фигури;
     5. глобален вектор;
@@ -114,7 +115,7 @@ def plot_position(
         pad=0.04,
     )
     colorbar.set_label(
-        "Black control  ←  balance  →  White control"
+        "Black attacker count  ←  balance  →  White attacker count"
     )
 
     figure.tight_layout()
@@ -168,7 +169,7 @@ def draw_heatmap_overlay(
     """
 
     heatmap = np.array(
-        analysis.heatmap,
+        analysis.attacker_count_field.matrix,
         dtype=float,
     )
 
@@ -324,11 +325,18 @@ def draw_single_attack_vector(
 ) -> None:
     """Рисува един локален вектор на влияние."""
 
-    start_x = vector.start_x + 0.5
-    start_y = 7 - vector.start_y + 0.5
+    plot_start_x, plot_start_y = math_to_plot_coords(
+        vector.start_x, vector.start_y
+    )
+    plot_end_x, plot_end_y = math_to_plot_coords(
+        vector.end_x, vector.end_y
+    )
 
-    end_x = vector.end_x + 0.5
-    end_y = 7 - vector.end_y + 0.5
+    start_x = plot_start_x + 0.5
+    start_y = plot_start_y + 0.5
+
+    end_x = plot_end_x + 0.5
+    end_y = plot_end_y + 0.5
 
     delta_x = end_x - start_x
     delta_y = end_y - start_y
@@ -383,10 +391,7 @@ def draw_pieces(
     """Рисува Unicode шахматните фигури."""
 
     for square, piece in board.piece_map().items():
-        x = chess.square_file(square)
-        mathematical_y = chess.square_rank(square)
-
-        plotted_y = 7 - mathematical_y
+        x, plotted_y = square_to_plot_coords(square)
 
         symbol = UNICODE_PIECES[piece.symbol()]
 
@@ -410,10 +415,11 @@ def draw_control_centers(
 
     if analysis.white_center is not None:
         white_x, white_y = analysis.white_center
+        plot_white_x, plot_white_y = math_to_plot_coords(white_x, white_y)
 
         axes.scatter(
-            white_x + 0.5,
-            7 - white_y + 0.5,
+            plot_white_x + 0.5,
+            plot_white_y + 0.5,
             s=250,
             marker="o",
             facecolor="#d73027",
@@ -425,10 +431,11 @@ def draw_control_centers(
 
     if analysis.black_center is not None:
         black_x, black_y = analysis.black_center
+        plot_black_x, plot_black_y = math_to_plot_coords(black_x, black_y)
 
         axes.scatter(
-            black_x + 0.5,
-            7 - black_y + 0.5,
+            plot_black_x + 0.5,
+            plot_black_y + 0.5,
             s=250,
             marker="X",
             facecolor="#2166ac",
@@ -453,11 +460,18 @@ def draw_control_vector(
     if vector is None:
         return
 
-    start_x = vector.start_x + 0.5
-    start_y = 7 - vector.start_y + 0.5
+    plot_start_x, plot_start_y = math_to_plot_coords(
+        vector.start_x, vector.start_y
+    )
+    plot_end_x, plot_end_y = math_to_plot_coords(
+        vector.end_x, vector.end_y
+    )
 
-    end_x = vector.end_x + 0.5
-    end_y = 7 - vector.end_y + 0.5
+    start_x = plot_start_x + 0.5
+    start_y = plot_start_y + 0.5
+
+    end_x = plot_end_x + 0.5
+    end_y = plot_end_y + 0.5
 
     axes.annotate(
         "",
@@ -497,13 +511,13 @@ def configure_axes(
     axes.set_xlabel("File")
     axes.set_ylabel("Rank")
 
-    white_control = (
-        analysis.control.white_controlled_squares
+    white_mobility = (
+        analysis.mobility.white_reachable_squares
     )
-    black_control = (
-        analysis.control.black_controlled_squares
+    black_mobility = (
+        analysis.mobility.black_reachable_squares
     )
-    control_balance = analysis.control.difference
+    mobility_balance = analysis.mobility.difference
 
     if dynamics is None:
         dynamics_line = (
@@ -521,9 +535,9 @@ def configure_axes(
         "VectorChess\n"
         f"Move: {analysis.move} | "
         f"{dynamics_line}\n"
-        f"White control: {white_control} | "
-        f"Black control: {black_control} | "
-        f"Balance: {control_balance:+d}",
+        f"White mobility: {white_mobility} | "
+        f"Black mobility: {black_mobility} | "
+        f"Balance: {mobility_balance:+d}",
         pad=16,
     )
 

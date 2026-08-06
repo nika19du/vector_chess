@@ -4,16 +4,16 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.colors import Normalize
 
-from analysis.field_reconstruction import build_potential_surface
+from analysis.attack_influence_surface import build_attack_influence_surface
 from analysis.source_field import build_source_field
 from analysis.source_potential import build_source_potential_surface
 from chess_engine.models import MoveAnalysis, SourcePotentialSurface
 from visualization.equipotential_plot import (
     CONTOUR_LEVEL_COUNT,
+    draw_attack_influence_surface,
     draw_board_background,
     draw_equipotential_lines,
     draw_pieces,
-    draw_potential_surface,
 )
 
 
@@ -32,7 +32,7 @@ def plot_field_comparison(
     математически модела, а не един и същ, различно изгладен.
 
     Ляво:
-        Attack Influence — атаково поле от analysis/potential_field.py
+        Attack Influence — атаково поле от analysis/attack_influence.py
         (зависи от board.attackers(), блокиране, геометрия на ходовете).
 
     Дясно:
@@ -90,8 +90,8 @@ def draw_attack_panel(
     analysis: MoveAnalysis,
     figure,
 ) -> None:
-    surface = build_potential_surface(
-        analysis.potential_field
+    surface = build_attack_influence_surface(
+        analysis.attack_influence_field
     )
 
     max_absolute_value = max(
@@ -107,7 +107,7 @@ def draw_attack_panel(
 
     draw_board_background(axes)
 
-    filled_contours = draw_potential_surface(
+    filled_contours = draw_attack_influence_surface(
         axes=axes,
         surface=surface,
         levels=levels,

@@ -14,9 +14,9 @@ class ChessVector:
 
 
 @dataclass
-class ControlSummary:
-    white_controlled_squares: int
-    black_controlled_squares: int
+class MobilitySummary:
+    white_reachable_squares: int
+    black_reachable_squares: int
     difference: int
 
 
@@ -32,11 +32,17 @@ class MoveDetails:
 
 
 @dataclass
-class SquareControl:
+class AttackerCountCell:
     square: str
     white_attackers: int
     black_attackers: int
     difference: int
+
+
+@dataclass
+class AttackerCountField:
+    cells: list[AttackerCountCell]
+    matrix: list[list[int]]
 
 
 @dataclass
@@ -69,40 +75,40 @@ class AttackVector:
 
 
 @dataclass
-class PotentialCell:
+class AttackInfluenceCell:
     """
-    Потенциалната стойност на едно шахматно поле.
+    Стойността на атаково влияние на едно шахматно поле.
 
-    white_potential:
+    white_attack_influence:
         сумата от тежестите на белите фигури,
         които влияят върху полето.
 
-    black_potential:
+    black_attack_influence:
         сумата от тежестите на черните фигури,
         които влияят върху полето.
 
     difference:
-        white_potential - black_potential
+        white_attack_influence - black_attack_influence
     """
 
     square: str
-    white_potential: float
-    black_potential: float
+    white_attack_influence: float
+    black_attack_influence: float
     difference: float
 
 
 @dataclass
-class PotentialField:
+class AttackInfluenceField:
     """
-    Цялото потенциално поле на шахматната дъска.
+    Цялото поле на атаково влияние на шахматната дъска.
     """
 
-    cells: list[PotentialCell]
+    cells: list[AttackInfluenceCell]
 
     matrix: list[list[float]]
 
-    total_white_potential: float
-    total_black_potential: float
+    total_white_attack_influence: float
+    total_black_attack_influence: float
 
     balance: float
 
@@ -148,10 +154,10 @@ class SourceField:
 
 
 @dataclass
-class PotentialSurface:
+class AttackInfluenceSurface:
     """
     Непрекъсната bicubic апроксимация на дискретното
-    8x8 потенциално поле.
+    8x8 поле на атаково влияние.
 
     x, y:
         координати на гъстата мрежа в екранни координати
@@ -159,7 +165,7 @@ class PotentialSurface:
         нагоре по дъската, за да съвпада с imshow/board_plot).
 
     z:
-        стойностите на потенциала върху гъстата мрежа,
+        стойностите на атаковото влияние върху гъстата мрежа,
         z.shape == (resolution, resolution).
 
     spline:
@@ -182,13 +188,13 @@ class SourcePotentialSurface:
     Непрекъснатото Φ_source(x, y), генерирано чрез директно
     сумиране на ρ с decay kernel — НЕ чрез сплайн интерполация.
 
-    За разлика от PotentialSurface, тук няма spline обект,
+    За разлика от AttackInfluenceSurface, тук няма spline обект,
     защото повърхността не минава през дискретни точки чрез
     интерполация, а е директна суперпозиция на källов принос
     от всяка фигура.
 
     x, y, z, resolution:
-        същата екранна конвенция като PotentialSurface, за да
+        същата екранна конвенция като AttackInfluenceSurface, за да
         могат двете повърхности да се рисуват с общ код.
 
     kernel_name / kernel_params:
@@ -241,8 +247,8 @@ class MoveAnalysis:
     is_capture: bool
     is_check: bool
 
-    control: ControlSummary
-    heatmap: list[list[int]]
+    mobility: MobilitySummary
+    attacker_count_field: AttackerCountField
 
     white_center: tuple[float, float] | None
     black_center: tuple[float, float] | None
@@ -250,7 +256,7 @@ class MoveAnalysis:
     control_vector: FieldVector | None
     attack_vectors: list[AttackVector]
 
-    potential_field: PotentialField
+    attack_influence_field: AttackInfluenceField
     gradient_field: GradientField
 
 
@@ -260,8 +266,8 @@ class DynamicsAnalysis:
     current_force: int
     delta_force: int
 
-    white_control_delta: int
-    black_control_delta: int
+    white_mobility_delta: int
+    black_mobility_delta: int
 
     attack_vectors_delta: int
     heatmap_change: int

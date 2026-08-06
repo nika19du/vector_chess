@@ -1,6 +1,7 @@
 import chess
 
-from analysis.potential_field import PIECE_WEIGHTS
+from analysis.attack_influence import PIECE_WEIGHTS
+from analysis.geometry import matrix_rc_to_square
 from chess_engine.models import SourceCell, SourceField
 
 
@@ -11,7 +12,7 @@ def calculate_square_mass(
     """
     Изчислява знаковата маса ρ на едно поле.
 
-    За разлика от potential_field.calculate_square_potential,
+    За разлика от attack_influence.calculate_square_attack_influence,
     тук НЕ гледаме кой атакува полето — гледаме единствено
     каква фигура стои върху него. Няма board.attackers(),
     няма ray-casting, няма blocking — чисто occupancy.
@@ -77,7 +78,7 @@ def build_source_matrix(
     Превръща списъка с клетки в матрица 8x8.
 
     Използва точно същата подредба като
-    potential_field.build_potential_matrix: ред 0 е rank 8,
+    attack_influence.build_attack_influence_matrix: ред 0 е rank 8,
     за да съвпадат двата модела координатно.
     """
 
@@ -88,11 +89,13 @@ def build_source_matrix(
 
     matrix: list[list[float]] = []
 
-    for rank in range(8, 0, -1):
+    for row_index in range(8):
         row: list[float] = []
 
-        for file_name in "abcdefgh":
-            square_name = f"{file_name}{rank}"
+        for column_index in range(8):
+            square_name = chess.square_name(
+                matrix_rc_to_square(row_index, column_index)
+            )
 
             row.append(
                 values_by_square[square_name]

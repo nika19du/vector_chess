@@ -1,5 +1,8 @@
 import math
 
+import chess
+
+from analysis.geometry import matrix_rc_to_math_coords, matrix_rc_to_square
 from chess_engine.models import (
     GradientField,
     GradientVector,
@@ -105,28 +108,28 @@ def calculate_gradient_magnitude(
 
 
 def build_gradient_field(
-    potential_matrix: list[list[float]],
+    attack_influence_matrix: list[list[float]],
 ) -> GradientField:
     """
-    Изгражда градиентно поле от Potential Field.
+    Изгражда градиентно поле от Attack Influence Field.
 
     За всяка клетка създава вектор:
 
         ∇F = (dF/dx, dF/dy)
 
     Този вектор сочи към посоката,
-    в която потенциалът на Белите спрямо
+    в която атаковото влияние на Белите спрямо
     Черните расте най-бързо.
     """
 
-    if len(potential_matrix) != 8:
+    if len(attack_influence_matrix) != 8:
         raise ValueError(
-            "Potential matrix must contain 8 rows."
+            "Attack influence matrix must contain 8 rows."
         )
 
-    if any(len(row) != 8 for row in potential_matrix):
+    if any(len(row) != 8 for row in attack_influence_matrix):
         raise ValueError(
-            "Each potential matrix row must contain 8 values."
+            "Each attack influence matrix row must contain 8 values."
         )
 
     vectors: list[GradientVector] = []
@@ -144,13 +147,13 @@ def build_gradient_field(
 
         for column in range(8):
             delta_x = calculate_x_gradient(
-                matrix=potential_matrix,
+                matrix=attack_influence_matrix,
                 row=row,
                 column=column,
             )
 
             delta_y = calculate_y_gradient(
-                matrix=potential_matrix,
+                matrix=attack_influence_matrix,
                 row=row,
                 column=column,
             )
@@ -160,19 +163,12 @@ def build_gradient_field(
                 delta_y=delta_y,
             )
 
-            # column 0..7 съответства на a..h.
-            mathematical_x = column
-
-            # row 0 е rank 8, затова математическото
-            # Y е 7 - row.
-            mathematical_y = 7 - row
-
-            file_name = chr(
-                ord("a") + column
+            mathematical_x, mathematical_y = matrix_rc_to_math_coords(
+                row, column
             )
-            rank_name = 8 - row
-            square_name = (
-                f"{file_name}{rank_name}"
+
+            square_name = chess.square_name(
+                matrix_rc_to_square(row, column)
             )
 
             vectors.append(

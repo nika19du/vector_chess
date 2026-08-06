@@ -6,10 +6,10 @@ from analysis.attack_vectors import (
 from analysis.center_of_mass import (
     calculate_control_center,
 )
-from analysis.control import count_control
-from analysis.heatmap import build_heatmap
-from analysis.potential_field import (
-    build_potential_field,
+from analysis.mobility import count_mobility
+from analysis.attacker_count import build_attacker_count_field
+from analysis.attack_influence import (
+    build_attack_influence_field,
 )
 from analysis.vectors import (
     calculate_control_vector,
@@ -32,9 +32,9 @@ def analyze_position(
     за позицията след извършения ход.
     """
 
-    control = count_control(board)
+    mobility = count_mobility(board)
 
-    heatmap = build_heatmap(board)
+    attacker_count_field = build_attacker_count_field(board)
 
     white_center = calculate_control_center(
         board,
@@ -54,12 +54,12 @@ def analyze_position(
         board
     )
 
-    potential_field = build_potential_field(
+    attack_influence_field = build_attack_influence_field(
         board
     )
 
     gradient_field = build_gradient_field(
-        potential_field.matrix
+        attack_influence_field.matrix
     )
 
     return MoveAnalysis(
@@ -70,12 +70,12 @@ def analyze_position(
         to_square=move_details.to_square,
         is_capture=move_details.is_capture,
         is_check=move_details.is_check,
-        control=control,
-        heatmap=heatmap,
+        mobility=mobility,
+        attacker_count_field=attacker_count_field,
         white_center=white_center,
         black_center=black_center,
         control_vector=control_vector,
         attack_vectors=attack_vectors,
-        potential_field=potential_field,
+        attack_influence_field=attack_influence_field,
         gradient_field=gradient_field,
     )
