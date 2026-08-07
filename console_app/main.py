@@ -7,7 +7,12 @@ from chess_engine.models import (
     CriticalPointCandidate,
     CriticalPointQualityAssessment,
     DynamicsAnalysis,
+    MorseSmaleCellQualityAssessment,
+    MorseSmaleCellRejectionReasonKind,
+    MorseSmaleComplex,
     MoveAnalysis,
+    RidgeValleyChain,
+    RidgeValleyQualityAssessment,
 )
 from console_app.export import (
     export_game_analysis,
@@ -22,6 +27,12 @@ from analysis.attack_influence import (
 from analysis.attack_influence_surface import build_attack_influence_surface
 from analysis.critical_point_quality import assess_critical_point_quality
 from analysis.critical_points import classify_critical_points, locate_critical_points
+from analysis.ridge_valley import assess_ridge_valley_quality, locate_ridge_valley_chains
+from analysis.morse_smale import (
+    assemble_morse_smale_cells,
+    assess_morse_smale_cell_quality,
+    locate_morse_smale_separatrices,
+)
 from visualization.attack_influence_plot import plot_attack_influence_field
 from analysis.gradient_field import (
     print_gradient_field,
@@ -31,6 +42,8 @@ from visualization.equipotential_plot import (
     plot_equipotential_field,
 )
 from visualization.gradient_plot import plot_gradient_field
+from visualization.morse_smale_plot import plot_morse_smale_cells
+from visualization.ridge_valley_plot import plot_ridge_valley
 from visualization.source_potential_plot import (
     plot_field_comparison,
 )
@@ -307,6 +320,185 @@ def print_critical_points_summary(
         print(f"  {category_label}: {count}")
 
 
+# Групиране на причини за отхвърляне на ridge/valley вериги по
+# КАТЕГОРИЯ -- същия принцип като REJECTION_REASON_CATEGORIES по-горе,
+# но за префиксите, генерирани от
+# analysis/ridge_valley.py::assess_ridge_valley_quality.
+RIDGE_VALLEY_REJECTION_REASON_CATEGORIES: list[tuple[str, str]] = [
+    ("chain too short", "веригата е твърде къса"),
+    (
+        "chain spends most of its length near the board boundary",
+        "веригата е предимно близо до ръба на дъската",
+    ),
+    (
+        "average cross-direction curvature too weak",
+        "цялостно твърде слаба кросова кривина",
+    ),
+]
+
+
+def categorize_ridge_valley_rejection_reason(
+    reason: str,
+) -> str:
+    for prefix, category_label in RIDGE_VALLEY_REJECTION_REASON_CATEGORIES:
+        if reason.startswith(prefix):
+            return category_label
+
+    return reason
+
+
+def print_ridge_valley_summary(
+    ridge_chains: list[RidgeValleyChain],
+    valley_chains: list[RidgeValleyChain],
+    ridge_assessments: list[RidgeValleyQualityAssessment],
+    valley_assessments: list[RidgeValleyQualityAssessment],
+) -> None:
+    """
+    Компактно резюме на изхода от ridge/valley трасирането -- НЕ
+    преизчислява нищо, само отчита вече готовите резултати от
+    analysis/ridge_valley.py. Огледален формат на
+    print_critical_points_summary по-горе.
+    """
+
+    accepted_ridge_count = sum(
+        1 for assessment in ridge_assessments if assessment.is_accepted
+    )
+    accepted_valley_count = sum(
+        1 for assessment in valley_assessments if assessment.is_accepted
+    )
+
+    all_assessments = ridge_assessments + valley_assessments
+    rejected_count = (
+        len(all_assessments) - accepted_ridge_count - accepted_valley_count
+    )
+
+    print("\n--- Ridge / Valley ---")
+    print(f"Открити ridge вериги: {len(ridge_chains)}")
+    print(f"Открити valley вериги: {len(valley_chains)}")
+    print(f"Приети ridge вериги: {accepted_ridge_count}")
+    print(f"Приети valley вериги: {accepted_valley_count}")
+    print(f"Отхвърлени вериги: {rejected_count}")
+
+    if rejected_count == 0:
+        return
+
+    reason_counts: dict[str, int] = {}
+
+    for assessment in all_assessments:
+        if assessment.is_accepted:
+            continue
+
+        category_label = categorize_ridge_valley_rejection_reason(
+            assessment.rejection_reasons[0]
+        )
+
+        reason_counts[category_label] = (
+            reason_counts.get(category_label, 0) + 1
+        )
+
+    print("Причини за отхвърляне:")
+
+    for category_label, count in reason_counts.items():
+        print(f"  {category_label}: {count}")
+
+
+# Четими Български етикети за MorseSmaleCellRejectionReasonKind
+# (analysis/morse_smale.py) -- директен речник по enum стойност, не
+# съвпадение по представка на низ, за разлика от
+# REJECTION_REASON_CATEGORIES/RIDGE_VALLEY_REJECTION_REASON_CATEGORIES
+# по-горе -- структурираният enum от Фаза 3 прави сравняването по низ
+# ненужно тук.
+MORSE_SMALE_REJECTION_REASON_LABELS: dict[MorseSmaleCellRejectionReasonKind, str] = {
+    MorseSmaleCellRejectionReasonKind.NOT_CLOSED: "клетката не е затворена",
+    MorseSmaleCellRejectionReasonKind.UNRELIABLE_BOUNDARY_TERMINATION: (
+        "ненадеждно завършена гранична сепаратриса"
+    ),
+    MorseSmaleCellRejectionReasonKind.AFFECTED_BY_TOPOLOGY_ISSUE: (
+        "засегната от топологичен проблем"
+    ),
+    MorseSmaleCellRejectionReasonKind.AREA_TOO_SMALL: "твърде малка площ",
+    MorseSmaleCellRejectionReasonKind.PERIMETER_TOO_SMALL: "твърде малък периметър",
+    MorseSmaleCellRejectionReasonKind.TOO_FEW_DISTINCT_BOUNDARY_POINTS: (
+        "твърде малко различни гранични точки"
+    ),
+    MorseSmaleCellRejectionReasonKind.NEAR_BOUNDARY: (
+        "твърде близо до ръба на дъската"
+    ),
+    MorseSmaleCellRejectionReasonKind.DEGENERATE_VERTEX_PARTICIPATION: (
+        "изродена гранична критична точка"
+    ),
+}
+
+
+def print_morse_smale_summary(
+    critical_point_assessments: list[CriticalPointQualityAssessment],
+    morse_smale_complex: MorseSmaleComplex,
+    cell_assessments: list[MorseSmaleCellQualityAssessment],
+) -> None:
+    """
+    Компактно резюме на изхода от Morse-Smale pipeline-а -- НЕ
+    преизчислява нищо, само отчита вече готовите резултати от
+    analysis/morse_smale.py.
+
+    За разлика от print_critical_points_summary/print_ridge_valley
+    _summary (които групират само по ПЪРВАТА причина за отхвърляне на
+    даден елемент), тук се броят ВСИЧКИ причини на всяка отхвърлена
+    клетка -- съответства на изричното решение от Фаза 3
+    (MorseSmaleCellQualityAssessment.rejection_reasons никога не се
+    съкращава до първата причина), затова резюмето не трябва тихо да
+    изхвърля тази информация в момента на отчитане.
+    """
+
+    accepted_points = [
+        assessment.point
+        for assessment in critical_point_assessments
+        if assessment.is_accepted
+    ]
+    accepted_saddle_count = sum(
+        1 for point in accepted_points if point.classification == "saddle"
+    )
+
+    closed_cell_count = sum(
+        1 for cell in morse_smale_complex.cells if cell.is_closed
+    )
+    open_cell_count = len(morse_smale_complex.cells) - closed_cell_count
+
+    accepted_cell_count = sum(
+        1 for assessment in cell_assessments if assessment.is_accepted
+    )
+    rejected_cell_count = len(cell_assessments) - accepted_cell_count
+
+    print("\n--- Morse-Smale Complex ---")
+    print(f"Приети критични точки: {len(accepted_points)}")
+    print(f"Използвани седла: {accepted_saddle_count}")
+    print(f"Сепаратриси: {len(morse_smale_complex.edges)}")
+    print(f"Затворени клетки: {closed_cell_count}")
+    print(f"Отворени/непълни клетки: {open_cell_count}")
+    print(f"Приети клетки: {accepted_cell_count}")
+    print(f"Отхвърлени клетки: {rejected_cell_count}")
+    print(f"Топологични проблеми: {len(morse_smale_complex.topology_issues)}")
+
+    if rejected_cell_count == 0:
+        return
+
+    reason_counts: dict[str, int] = {}
+
+    for assessment in cell_assessments:
+        if assessment.is_accepted:
+            continue
+
+        for reason in assessment.rejection_reasons:
+            category_label = MORSE_SMALE_REJECTION_REASON_LABELS[reason.kind]
+            reason_counts[category_label] = (
+                reason_counts.get(category_label, 0) + 1
+            )
+
+    print("Причини за отхвърляне:")
+
+    for category_label, count in reason_counts.items():
+        print(f"  {category_label}: {count}")
+
+
 def main() -> None:
     game = ChessGame()
 
@@ -335,6 +527,14 @@ def main() -> None:
     print(
         "За критични точки (maximum/minimum/saddle) "
         "напиши: critical_points_plot"
+    )
+    print(
+        "За ridge/valley вериги "
+        "напиши: ridge_valley_plot"
+    )
+    print(
+        "За Morse-Smale комплекс "
+        "напиши: morse_smale_plot"
     )
     print(
         "За аудио клип на последния ход "
@@ -474,6 +674,111 @@ def main() -> None:
             plot_critical_points(
                 board=game.board,
                 analysis=previous_analysis,
+                surface=surface,
+                classified_points=classified_points,
+                assessments=assessments,
+            )
+
+            continue
+
+        if move_text == "ridge_valley_plot":
+            if previous_analysis is None:
+                print(
+                    "Все още няма позиция "
+                    "за визуализиране."
+                )
+                continue
+
+            surface = build_attack_influence_surface(
+                previous_analysis.attack_influence_field
+            )
+
+            candidates = locate_critical_points(surface)
+            classified_points = classify_critical_points(
+                candidates, surface
+            )
+            critical_point_assessments = assess_critical_point_quality(
+                classified_points, surface
+            )
+            accepted_critical_points = [
+                assessment.point
+                for assessment in critical_point_assessments
+                if assessment.is_accepted
+            ]
+
+            ridge_chains = locate_ridge_valley_chains(
+                surface, accepted_critical_points, kind="ridge"
+            )
+            valley_chains = locate_ridge_valley_chains(
+                surface, accepted_critical_points, kind="valley"
+            )
+
+            ridge_assessments = assess_ridge_valley_quality(
+                ridge_chains, surface
+            )
+            valley_assessments = assess_ridge_valley_quality(
+                valley_chains, surface
+            )
+
+            print_ridge_valley_summary(
+                ridge_chains=ridge_chains,
+                valley_chains=valley_chains,
+                ridge_assessments=ridge_assessments,
+                valley_assessments=valley_assessments,
+            )
+
+            plot_ridge_valley(
+                board=game.board,
+                analysis=previous_analysis,
+                surface=surface,
+                classified_points=classified_points,
+                critical_point_assessments=critical_point_assessments,
+                ridge_assessments=ridge_assessments,
+                valley_assessments=valley_assessments,
+            )
+
+            continue
+
+        if move_text == "morse_smale_plot":
+            if previous_analysis is None:
+                print(
+                    "Все още няма позиция "
+                    "за визуализиране."
+                )
+                continue
+
+            surface = build_attack_influence_surface(
+                previous_analysis.attack_influence_field
+            )
+
+            candidates = locate_critical_points(surface)
+            classified_points = classify_critical_points(
+                candidates, surface
+            )
+            critical_point_assessments = assess_critical_point_quality(
+                classified_points, surface
+            )
+
+            separatrices = locate_morse_smale_separatrices(
+                surface, critical_point_assessments
+            )
+            morse_smale_complex = assemble_morse_smale_cells(separatrices)
+            cell_assessments = assess_morse_smale_cell_quality(
+                morse_smale_complex.cells, morse_smale_complex.topology_issues
+            )
+
+            print_morse_smale_summary(
+                critical_point_assessments=critical_point_assessments,
+                morse_smale_complex=morse_smale_complex,
+                cell_assessments=cell_assessments,
+            )
+
+            plot_morse_smale_cells(
+                board=game.board,
+                analysis=previous_analysis,
+                surface=surface,
+                morse_smale_complex=morse_smale_complex,
+                cell_assessments=cell_assessments,
             )
 
             continue

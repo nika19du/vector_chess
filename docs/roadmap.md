@@ -48,12 +48,12 @@ Critical Point Detection & Hessian Classification (merged from the originally se
 
 Milestone 7
 
-Ridge / Valley Analysis
+Ridge / Valley Analysis. Phases: mathematical design note (docs/mathematics.md, Section 10), closed-form Hessian eigenvector derivation and eigenvector-following marching tracer (analysis/ridge_valley.py::locate_ridge_valley_chains), chain-level quality assessment (assess_ridge_valley_quality), visualization (visualization/ridge_valley_plot.py), console integration (ridge_valley_plot command).
 
-...
+✔
 
 Milestone 8
 
-Morse-Smale Complex
+Morse-Smale Complex. Phases: separatrix tracing (gradient-flow integral curves from quality-accepted saddles, analysis/morse_smale.py), cell assembly (half-edge/planar-face-tracing over closed separatrices, closed vs. open cell topology, structured TopologyIssue reporting), cell quality assessment (structured rejection-reason model, topology-invalid vs. topology-valid-but-low-quality distinction), visualization (visualization/morse_smale_plot.py), console integration (morse_smale_plot command).
 
-...
+✔

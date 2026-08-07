@@ -22,6 +22,22 @@ Gradient
 
 ↓
 
+Hessian
+
+↓
+
+Critical Points (localization → classification → quality assessment)
+
+↓
+
+Ridge / Valley (tracing → quality assessment)
+
+↓
+
+Morse-Smale Complex (separatrix tracing → cell assembly → cell quality assessment)
+
+↓
+
 Visualization
 
 ↓
