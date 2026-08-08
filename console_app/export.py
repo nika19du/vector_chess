@@ -2,6 +2,9 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+from audio.export import write_wav
+from audio.mapping import build_audio_mapping
+from audio.renderer import AudioRenderer
 from chess_engine.models import DynamicsAnalysis, MoveAnalysis
 
 
@@ -42,3 +45,65 @@ def export_game_analysis(
         )
 
     return output_path
+
+
+def export_move_audio(
+    analysis: MoveAnalysis,
+    dynamics: DynamicsAnalysis | None,
+    index: int | None = None,
+    file_name: str | None = None,
+) -> Path:
+    """
+    Renders one move's Audio Layer MVP clip and writes it to
+    output/audio/. Move -> AudioMapping -> AudioRenderer -> .wav,
+    per docs/audio.md.
+    """
+
+    output_directory = Path("output") / "audio"
+    output_directory.mkdir(parents=True, exist_ok=True)
+
+    if file_name is None:
+        prefix = f"{index:03d}_" if index is not None else ""
+        file_name = f"{prefix}{analysis.move}.wav"
+
+    output_path = output_directory / file_name
+
+    mapping = build_audio_mapping(analysis, dynamics)
+    clip = AudioRenderer().render(mapping)
+
+    return write_wav(clip, output_path)
+
+
+def export_game_audio(
+    analysis_history: list[MoveAnalysis],
+    dynamics_history: list[DynamicsAnalysis],
+) -> list[Path]:
+    """
+    Renders every move's Audio Layer MVP clip for the whole game and
+    writes them all to output/audio/. Thin loop over
+    export_move_audio -- no new mapping/rendering/writing logic.
+
+    Dynamics pairing mirrors console_app.main.print_history's existing
+    convention: analysis_history[i] pairs with dynamics_history[i - 1]
+    for i > 0, and with no dynamics (None) for i == 0.
+
+    Safe to call more than once, or after some moves were already
+    exported individually via export_move_audio -- filenames are
+    deterministic, so re-exporting a move just rewrites identical
+    bytes.
+    """
+
+    paths: list[Path] = []
+
+    for index, analysis in enumerate(analysis_history):
+        dynamics = dynamics_history[index - 1] if index > 0 else None
+
+        path = export_move_audio(
+            analysis=analysis,
+            dynamics=dynamics,
+            index=index + 1,
+        )
+
+        paths.append(path)
+
+    return paths
