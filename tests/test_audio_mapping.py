@@ -13,10 +13,10 @@ from audio.mapping import (
     RANK_STEPS,
     WHITE_HARMONIC_RICHNESS,
     _harmonic_richness_for_color,
-    _harmony_interval_for_balance,
     _loudness_for_dynamics_label,
     _pitch_for_square,
     build_audio_mapping,
+    harmony_interval_for_balance,
 )
 from chess_engine.analyzer import analyze_position
 from chess_engine.models import DynamicsAnalysis, MoveDetails
@@ -114,26 +114,26 @@ def test_harmonic_richness_distinguishes_colors():
 
 
 def test_harmony_is_most_consonant_at_zero_balance():
-    assert _harmony_interval_for_balance(0.0, is_check=False) == pytest.approx(
+    assert harmony_interval_for_balance(0.0, is_check=False) == pytest.approx(
         CONSONANT_RATIO
     )
 
 
 def test_harmony_moves_monotonically_toward_dissonance():
     magnitudes = [0.0, 2.0, 5.0, 10.0, 20.0, 40.0]
-    ratios = [_harmony_interval_for_balance(m, is_check=False) for m in magnitudes]
+    ratios = [harmony_interval_for_balance(m, is_check=False) for m in magnitudes]
 
     assert all(ratios[i] <= ratios[i + 1] for i in range(len(ratios) - 1))
     assert ratios[-1] == pytest.approx(DISSONANT_RATIO)
 
 
 def test_check_forces_dissonance_floor_even_at_zero_balance():
-    assert _harmony_interval_for_balance(0.0, is_check=True) >= CHECK_DISSONANCE_FLOOR
+    assert harmony_interval_for_balance(0.0, is_check=True) >= CHECK_DISSONANCE_FLOOR
 
 
 def test_check_does_not_reduce_an_already_higher_dissonance():
-    without_check = _harmony_interval_for_balance(20.0, is_check=False)
-    with_check = _harmony_interval_for_balance(20.0, is_check=True)
+    without_check = harmony_interval_for_balance(20.0, is_check=False)
+    with_check = harmony_interval_for_balance(20.0, is_check=True)
 
     assert with_check == pytest.approx(without_check)
 
@@ -142,13 +142,13 @@ def test_harmony_dissonance_is_symmetric_for_positive_and_negative_balance():
     # Dissonance intensity reflects how lopsided the position is, not
     # which side is ahead -- direction/mode is a renderer concern
     # (see audio.renderer._harmony_frequency), not a mapping concern.
-    assert _harmony_interval_for_balance(-8.0, is_check=False) == pytest.approx(
-        _harmony_interval_for_balance(8.0, is_check=False)
+    assert harmony_interval_for_balance(-8.0, is_check=False) == pytest.approx(
+        harmony_interval_for_balance(8.0, is_check=False)
     )
 
 
 def test_harmony_near_zero_balance_stays_close_to_consonant():
-    ratio = _harmony_interval_for_balance(0.5, is_check=False)
+    ratio = harmony_interval_for_balance(0.5, is_check=False)
 
     assert CONSONANT_RATIO < ratio < DISSONANT_RATIO
     assert ratio == pytest.approx(CONSONANT_RATIO, abs=0.05)

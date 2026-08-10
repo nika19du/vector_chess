@@ -6,6 +6,11 @@ import numpy as np
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QGridLayout, QLabel, QMainWindow, QWidget
 
+from audio.backend import AudioBackend, SoundDeviceBackend
+from audio.engine import AudioEngine
+from audio.voices import build_default_voice_registry
+from desktop_app.audio_controller import AudioController
+from desktop_app.audio_mixer_panel import AudioMixerPanel
 from desktop_app.board_panel import BoardPanel
 from desktop_app.gl_canvas import MathCanvas
 from desktop_app.layer_panel import LayerPanel
@@ -17,6 +22,7 @@ from desktop_app.layers.gradient_layer import GRADIENT_LAYER
 from desktop_app.layers.morse_smale_layer import MORSE_SMALE_LAYER
 from desktop_app.layers.ridge_valley_layer import RIDGE_VALLEY_LAYER
 from desktop_app.position_cache import CacheEntryState, PositionCache
+from desktop_app.scrub_controller import ScrubController
 from desktop_app.session_state import SessionState
 from desktop_app.timeline_panel import TimelinePanel
 from desktop_app.transition_controller import TransitionController
@@ -76,19 +82,66 @@ class MainWindow(QMainWindow):
     position, or already there), calling `_render_all_layers` back only
     once settled. `_render_all_layers` itself is unchanged.
 
-    Timeline / history navigation (Phase 5e, discrete navigation only --
-    continuous scrubbing is a deferred follow-up, see the milestone plan):
-    `self.timeline_panel` (`desktop_app/timeline_panel.py`) is the bottom
-    transport strip. It calls only `SessionState` navigation methods
+    Timeline / history navigation (Phase 5e, discrete navigation): the
+    discrete part of `self.timeline_panel` (`desktop_app/timeline_panel.py`)
+    calls only `SessionState` navigation methods
     (`go_to_start`/`undo`/`redo`/`go_to_end`/`set_current_node`) and never
     touches `self.canvas`, `self.board_panel`, `self.position_cache`, or
-    `self.transition_controller` directly -- Timeline-driven navigation
-    reaches all of those exactly the way a move/undo/redo already does,
-    through `current_node_changed` and the two handlers below. No change to
-    either handler was needed for this.
+    `self.transition_controller` directly -- discrete Timeline-driven
+    navigation reaches all of those exactly the way a move/undo/redo already
+    does, through `current_node_changed` and the two handlers below. No
+    change to either handler was needed for this.
+
+    Continuous Timeline scrubbing (Phase 5e.2): `self.scrub_controller`
+    (`desktop_app/scrub_controller.py`) is a second, independent consumer of
+    `self.canvas`/`self.position_cache`, driven by `TimelinePanel`'s scrub
+    strip rather than by `current_node_changed`. It never mutates
+    `SessionState.current_node` mid-drag -- only once, on release, via the
+    same `set_current_node` call any other Timeline click already makes, at
+    which point the two handlers below take back over exactly as usual.
+    `self.timeline_panel` is constructed with `board_panel`/
+    `transition_controller`/`scrub_controller` so its scrub strip can reach
+    them directly (the one narrow exception to "Timeline never touches those
+    objects directly" above, scoped entirely to the transient, non-
+    committing scrub gesture).
+
+    Live audio (Phase 5f.3 move-driven, Phase 5f.4 scrub-driven):
+    `self.audio_engine` (`audio/engine.py`) is the real-time runtime;
+    `self.audio_controller` (`desktop_app/audio_controller.py`) is its sole
+    bridge to `SessionState` and to the scrub gesture, passed to
+    `self.timeline_panel` alongside `scrub_controller` so its strip can
+    forward the exact same `ScrubPosition` values to both. Like
+    `scrub_controller`, `audio_controller` never mutates `SessionState.
+    current_node` -- committed moves and their capture/check accents are
+    published entirely through the ordinary `current_node_changed` path,
+    unchanged by scrubbing existing.
+
+    Live Audio mixer (Phase 5f.5): `self.audio_mixer_panel` (`desktop_app/
+    audio_mixer_panel.py`) is the compact ON/OFF, master gain, and per-
+    voice mute/solo strip. It never touches `self.audio_engine` beyond
+    `is_running`/`is_available`/`start`/`stop` (the engine's own existing
+    lifecycle contract -- OFF pauses the stream, it does not zero gain or
+    tear anything down) and never touches `self.audio_controller` beyond
+    its mixer-state API (`master_gain`/`voice_mute`/`voice_solo` and their
+    setters) -- see both classes' own docstrings.
+
+    `audio_backend` is an injection point (defaults to a real
+    `SoundDeviceBackend`), added so tests that construct a `MainWindow` for
+    unrelated reasons (canvas rendering, timeline navigation, ...) don't
+    each also open a real hardware audio stream -- `tests/conftest.py`
+    defaults it to a `FakeAudioBackend` session-wide for exactly that
+    reason, the same precedent already established there for
+    `PositionCache`'s executor. Production code (this class's own
+    entry point) never passes it, so the real backend remains the default
+    outside tests.
     """
 
-    def __init__(self, initial_board: chess.Board | None = None) -> None:
+    def __init__(
+        self,
+        initial_board: chess.Board | None = None,
+        *,
+        audio_backend: AudioBackend | None = None,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("VectorChess")
 
@@ -118,7 +171,29 @@ class MainWindow(QMainWindow):
             position_cache=self.position_cache,
             on_settled=self._render_all_layers,
         )
-        self.timeline_panel = TimelinePanel(self.session_state, self)
+        self.scrub_controller = ScrubController(canvas=self.canvas, position_cache=self.position_cache)
+        # Phase 5f.3/5f.4: live audio. AudioEngine owns the real-time output
+        # stream (mono, sounddevice-backed -- see audio/engine.py; silently
+        # falls back to an unavailable/no-op state if no device exists, per
+        # its own start() contract, rather than raising here). AudioController
+        # is the sole bridge from SessionState/scrub gestures to it -- no
+        # other object in this window ever calls into audio/ directly.
+        self.voice_registry = build_default_voice_registry()
+        self.audio_engine = AudioEngine(audio_backend or SoundDeviceBackend(), self.voice_registry)
+        self.audio_engine.start()
+        self.audio_controller = AudioController(self.session_state, self.audio_engine)
+        self.timeline_panel = TimelinePanel(
+            self.session_state,
+            self,
+            board_panel=self.board_panel,
+            transition_controller=self.transition_controller,
+            scrub_controller=self.scrub_controller,
+            audio_controller=self.audio_controller,
+        )
+        # Phase 5f.5: the Live Audio mixer strip -- reads/writes only
+        # through audio_controller/audio_engine (see AudioMixerPanel's own
+        # docstring), constructed after both exist.
+        self.audio_mixer_panel = AudioMixerPanel(self.audio_controller, self.audio_engine, self.voice_registry, self)
 
         central = QWidget(self)
         layout = QGridLayout(central)
@@ -138,11 +213,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.canvas, 1, 1)
         layout.addWidget(self.layer_panel, 2, 1)
         layout.addWidget(self.timeline_panel, 3, 0, 1, 2)
+        # Phase 5f.5: a new row beneath the timeline, spanning both
+        # columns -- purely additive, no change to any existing widget's
+        # row/column/span above. Visually secondary and compact (fixed
+        # row stretch, like the timeline row above it), not a layout
+        # redesign.
+        layout.addWidget(self.audio_mixer_panel, 4, 0, 1, 2)
         layout.setColumnStretch(0, 0)
         layout.setColumnStretch(1, 1)
         layout.setRowStretch(1, 3)
         layout.setRowStretch(2, 1)
         layout.setRowStretch(3, 0)
+        layout.setRowStretch(4, 0)
         central.setLayout(layout)
         self.setCentralWidget(central)
 
@@ -160,7 +242,24 @@ class MainWindow(QMainWindow):
         is what makes it impossible for a still-running analysis worker to
         try to publish a result into a `PositionCache`/`MainWindow` that's
         already being destroyed.
+
+        `self.scrub_controller.shutdown()` runs first: it unsubscribes from
+        `position_cache.position_ready` so a scrub still mid-drag when the
+        window closes can't have a late-arriving cache result try to push a
+        frame into `self.canvas` while this window is mid-teardown. Ordered
+        before `position_cache.shutdown()` deliberately -- the controller
+        disconnects itself while the cache is still fully alive, rather than
+        racing the cache's own shutdown.
+
+        `self.audio_controller.shutdown()` runs next, before `position_cache.
+        shutdown()` too: it disconnects from `session_state.current_node_
+        changed`, clears any in-progress scrub-preview state, and joins
+        `AudioEngine`'s real-time thread -- so no late-arriving navigation or
+        scrub update can try to publish into an engine that's mid-teardown,
+        and no audio thread is left alive once this window closes.
         """
+        self.scrub_controller.shutdown()
+        self.audio_controller.shutdown()
         self.position_cache.shutdown()
         super().closeEvent(event)
 

@@ -233,6 +233,33 @@ class SessionState(QObject):
         path.reverse()
         return path
 
+    def active_path(self) -> list[chess.pgn.GameNode]:
+        """
+        Root-to-branch-tip path, root first (Phase 5e.2: continuous Timeline
+        scrubbing). Extends `mainline_path()` (root..current_node, via
+        `.parent`) with a forward walk from `current_node` via
+        `_active_child` to the tip of the currently active branch -- the
+        same forward-walking logic `go_to_end()` already performs, returning
+        the visited nodes as a list instead of jumping to the last one.
+        `current_node` itself appears exactly once, at the join between the
+        two walks.
+
+        This is a pure, read-only derived view (O(depth), same cost class as
+        `mainline_path()`/`go_to_end()`) -- no new field, no new signal.
+        `mainline_path()` itself is untouched; this is an addition alongside
+        it, not a replacement, since existing consumers (the discrete
+        Timeline strip) still want root..current only.
+        """
+        path = self.mainline_path()
+        node = self._current_node
+        while True:
+            next_node = self._active_child.get(node)
+            if next_node is None:
+                break
+            path.append(next_node)
+            node = next_node
+        return path
+
     def layer_visible(self, layer_id: str) -> bool:
         return self._layer_state.get(layer_id, True)
 

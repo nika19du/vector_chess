@@ -173,3 +173,99 @@ def test_the_board_repaints_to_reflect_undo(qtbot):
     board = view._board_node.board()
     assert board.piece_at(chess.E2) is not None
     assert board.piece_at(chess.E4) is None
+
+
+# ---------------------------------------------------------
+# preview node (Phase 5e.2: continuous Timeline scrubbing)
+# ---------------------------------------------------------
+
+
+def test_set_preview_node_overrides_the_painted_position_without_touching_current_node(qtbot):
+    panel = _make_panel(qtbot)
+    view = panel.board_view
+    state = panel._session_state
+    original_current_node = state.current_node
+
+    preview_root = chess.pgn.Game()
+    preview_node = preview_root.add_variation(chess.Move.from_uci("e2e4"))
+
+    panel.set_preview_node(preview_node)
+
+    assert view._preview_node is preview_node
+    assert state.current_node is original_current_node  # untouched
+    assert view._board_node is original_current_node  # real display node unchanged
+
+
+def test_set_preview_node_none_reverts_to_the_normal_display(qtbot):
+    panel = _make_panel(qtbot)
+    view = panel.board_view
+    state = panel._session_state
+
+    preview_root = chess.pgn.Game()
+    preview_node = preview_root.add_variation(chess.Move.from_uci("e2e4"))
+    panel.set_preview_node(preview_node)
+
+    panel.set_preview_node(None)
+
+    assert view._preview_node is None
+    assert state.current_node is view._board_node
+
+
+def test_a_committed_navigation_clears_any_active_preview(qtbot):
+    panel = _make_panel(qtbot)
+    view = panel.board_view
+    state = panel._session_state
+
+    preview_root = chess.pgn.Game()
+    preview_node = preview_root.add_variation(chess.Move.from_uci("e2e4"))
+    panel.set_preview_node(preview_node)
+    assert view._preview_node is preview_node
+
+    with qtbot.waitSignal(state.current_node_changed, timeout=1000):
+        state.make_move(chess.Move.from_uci("d2d4"))
+
+    assert view._preview_node is None
+
+
+def test_a_click_during_an_active_preview_still_acts_on_the_real_current_node(qtbot):
+    # Approved clarification: chess input/legality/move submission must
+    # ALWAYS use the real _board_node/current_node, never the preview --
+    # even while a preview override is active for painting.
+    panel = _make_panel(qtbot)
+    view = panel.board_view
+    state = panel._session_state
+
+    # A preview showing a position where e2 is empty and e4 has a pawn --
+    # if input were reading the preview, selecting e2 below would fail (no
+    # piece there) or clicking e4 would attempt a nonsensical move.
+    preview_root = chess.pgn.Game()
+    preview_node = preview_root.add_variation(chess.Move.from_uci("e2e4"))
+    panel.set_preview_node(preview_node)
+
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=_center(panel, chess.E2))
+    assert view._selected_square == chess.E2  # selection succeeded against the REAL board
+
+    with qtbot.waitSignal(state.current_node_changed, timeout=1000):
+        qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=_center(panel, chess.E4))
+
+    # The move was submitted against the real current_node's position, not
+    # fabricated from the preview.
+    board = state.current_node.board()
+    assert board.piece_at(chess.E4) is not None
+    assert board.piece_at(chess.E2) is None
+    assert state.current_node.move == chess.Move.from_uci("e2e4")
+
+
+def test_preview_node_never_affects_legal_destination_highlighting(qtbot):
+    panel = _make_panel(qtbot)
+    view = panel.board_view
+
+    # An arbitrary, unrelated preview position -- legal-destination
+    # computation must still reflect the real board, not this.
+    preview_root = chess.pgn.Game()
+    preview_node = preview_root.add_variation(chess.Move.from_uci("g1f3"))
+    panel.set_preview_node(preview_node)
+
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=_center(panel, chess.E2))
+
+    assert view._legal_destinations == {chess.E3, chess.E4}

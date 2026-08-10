@@ -39,23 +39,28 @@ Milestone 5
 Interactive UI. Full design in docs/interactive_ui.md (v3, architecture frozen -- ready
 for implementation) -- no new mathematics, wires already-complete math (Milestones
 1-4a, 6-8) to a real-time desktop application through a new presentation layer
-(SessionState, Position Cache, Layer Registry, Voice Registry). Only phase 5f (live
-audio) depends on Milestone 4b (Audio Layer 2); phases 5a-5e and 5g-5j proceed
-independently of it. Phases: 5a rendering substrate (PySide6 + VisPy canvas; SessionState
+(SessionState, Position Cache, Layer Registry, Voice Registry). Phase 5f (live audio) was
+originally scoped to depend on Milestone 4b (Audio Layer 2); in practice it shipped
+built entirely on the already-complete Milestone 4/4a MVP mappings and did not end up
+needing 4b at all -- see docs/audio.md's "Live Audio Runtime" section and
+docs/interactive_ui.md's implementation status note for the corrected record. Milestone
+4b remains future work (richer audio content, layered onto the now-working runtime, not
+a precondition for it). Phases: 5a rendering substrate (PySide6 + VisPy canvas; SessionState
 with per-slice update signals; FEN-keyed Position Cache with asynchronous, background
 cache-miss population), 5b interactive board (drag/drop, tree-aware undo/redo via
 chess.pgn.GameNode, PGN load with variations), 5c Layer Registry and Voice Registry
 stood up with all six field layers and five audio voices registered, 5d cross-move
 correspondence matching (memoized) and move-to-move animation, 5e continuous timeline
 scrubbing with branch switching, 5f live audio playback (sounddevice) at a 20ms latency
-budget with a per-voice mixer built against the Voice Registry, 5g inspector panel, 5h
+budget with finite per-voice articulation, scrub preview, and a mixer built against the
+Voice Registry -- ✔ complete (5f.1-5f.6), 5g inspector panel, 5h
 freeze/solo/compare interactions, 5i keyboard shortcuts and canvas zoom/pan, 5j offline
 deterministic export (video via FFmpeg, MIDI via mido, WAV) isolated from live session
 mutation via a snapshot taken at export start. Testing strategy (component tests,
 concurrency stress test, cross-phase end-to-end test, standing performance regression)
 in docs/interactive_ui.md Part 14.
 
-...
+... (5a-5f complete; 5g-5j remain)
 
 Milestone 6
 

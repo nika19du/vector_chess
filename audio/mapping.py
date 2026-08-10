@@ -76,7 +76,7 @@ def _harmonic_richness_for_color(color: str) -> int:
     return WHITE_HARMONIC_RICHNESS if color == "white" else BLACK_HARMONIC_RICHNESS
 
 
-def _harmony_interval_for_balance(balance: float, is_check: bool) -> float:
+def harmony_interval_for_balance(balance: float, is_check: bool) -> float:
     normalized = min(abs(balance) / REFERENCE_MAX_BALANCE, 1.0)
     ratio = CONSONANT_RATIO + normalized * (DISSONANT_RATIO - CONSONANT_RATIO)
 
@@ -119,7 +119,7 @@ def build_audio_mapping(
         is_capture=analysis.is_capture,
         is_check=analysis.is_check,
         attack_influence_balance=balance,
-        harmony_interval_ratio=_harmony_interval_for_balance(
+        harmony_interval_ratio=harmony_interval_for_balance(
             balance, analysis.is_check
         ),
         dynamics_label=dynamics_label,

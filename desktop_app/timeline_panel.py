@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import chess.pgn
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
@@ -10,7 +11,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from desktop_app.audio_controller import AudioController
+from desktop_app.board_panel import BoardPanel
+from desktop_app.scrub import ScrubPosition, clamp_scrub_fraction
+from desktop_app.scrub_controller import ScrubController
 from desktop_app.session_state import SessionState
+from desktop_app.transition_controller import TransitionController
+
+SCRUB_STRIP_STYLE = "background-color: #334155; border-radius: 4px;"
 
 # Reuses the same tension-gold accent board_panel.py already uses for
 # selection (SELECTED_SQUARE_OVERLAY/LEGAL_DESTINATION_DOT) -- Part 9
@@ -19,6 +27,125 @@ CURRENT_MOVE_HIGHLIGHT_STYLE = "background-color: #eab308; color: #1e293b; font-
 MOVE_BUTTON_STYLE = "text-align: left;"
 BRANCH_BADGE_STYLE = "color: #eab308; font-weight: bold;"
 SIBLING_BUTTON_STYLE = "color: #94a3b8; font-style: italic;"
+
+
+class _ScrubStrip(QWidget):
+    """
+    Phase 5e.2: the continuous drag-to-scrub strip. Sits above the discrete
+    move-history row, mapping a mouse x-position across its width to a
+    continuous fraction across `SessionState.active_path()` -- the full
+    active branch (root..tip), the resolved scope for scrubbing, wider than
+    the discrete strip's own `mainline_path()` (root..current_node) below.
+
+    Inert without a `ScrubController`: `TimelinePanel(session_state, parent)`
+    (the pre-5e.2 constructor shape, still used by existing discrete-only
+    tests and call sites) constructs this strip with `board_panel=None`,
+    `transition_controller=None`, `scrub_controller=None`, and every handler
+    here no-ops in that case -- discrete Timeline behavior is completely
+    unaffected by this class existing.
+
+    Pure pixel<->fraction arithmetic lives here (`_fraction_from_x`, via
+    `desktop_app.scrub.clamp_scrub_fraction`); `ScrubController` itself
+    never sees a raw pixel, only `ScrubPosition` values -- the same
+    separation of concerns `_BoardView` keeps between its own pixel<->square
+    mapping and the chess logic it drives.
+
+    Phase 5f.4 adds an optional `audio_controller`, forwarded the exact same
+    `ScrubPosition` values at the exact same call sites as `scrub_controller`
+    (begin/update/end), never gating whether a scrub is allowed to start --
+    that decision (Rule 6, below) is made once, before either controller is
+    told about it, which is what keeps visual and audio scrub from ever
+    disagreeing about whether one is active.
+    """
+
+    FIXED_HEIGHT = 20
+
+    def __init__(
+        self,
+        session_state: SessionState,
+        board_panel: BoardPanel | None,
+        transition_controller: TransitionController | None,
+        scrub_controller: ScrubController | None,
+        parent: QWidget | None = None,
+        *,
+        audio_controller: AudioController | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._session_state = session_state
+        self._board_panel = board_panel
+        self._transition_controller = transition_controller
+        self._scrub_controller = scrub_controller
+        # Optional and separately guarded, NOT part of `_is_active()` --
+        # audio is an additional consumer of the same scrub gesture the
+        # visual system already gates, not a second thing that gesture
+        # depends on. A scrub strip built without an AudioController (every
+        # pre-5f.4 call site, and every visual-only test) behaves exactly
+        # as it did before this phase.
+        self._audio_controller = audio_controller
+        self.setFixedHeight(self.FIXED_HEIGHT)
+        self.setStyleSheet(SCRUB_STRIP_STYLE)
+
+    def _is_active(self) -> bool:
+        return (
+            self._board_panel is not None
+            and self._transition_controller is not None
+            and self._scrub_controller is not None
+        )
+
+    def _fraction_from_x(self, x: float, path_length: int) -> ScrubPosition:
+        segment_count = max(1, path_length - 1)
+        width = max(1, self.width())
+        raw_position = (x / width) * segment_count
+        return clamp_scrub_fraction(raw_position, path_length)
+
+    def _apply(self, x: float) -> None:
+        path_length = self._scrub_controller.path_length
+        if path_length is None:
+            return
+        position = self._fraction_from_x(x, path_length)
+        self._scrub_controller.update(position)
+        self._board_panel.set_preview_node(self._scrub_controller.snap_to_nearest_node(position))
+        if self._audio_controller is not None:
+            self._audio_controller.update_scrub(position)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if not self._is_active() or event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self._transition_controller.is_animating:
+            # Rule 6 (approved plan): scrubbing may only begin from a fully
+            # settled state -- a press during an ordinary ~500ms move
+            # animation is simply ignored, not queued or force-settled.
+            return
+        active_path = self._session_state.active_path()
+        if len(active_path) < 2:
+            return  # nothing to scrub across
+        self._scrub_controller.begin(active_path)
+        if self._audio_controller is not None:
+            self._audio_controller.begin_scrub(active_path)
+        self._apply(event.position().x())
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if not self._is_active() or not self._scrub_controller.is_scrubbing:
+            return
+        self._apply(event.position().x())
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if not self._is_active() or not self._scrub_controller.is_scrubbing:
+            return
+        path_length = self._scrub_controller.path_length
+        if path_length is None:
+            return
+        position = self._fraction_from_x(event.position().x(), path_length)
+        node = self._scrub_controller.end(position)
+        if self._audio_controller is not None:
+            self._audio_controller.end_scrub()
+        self._board_panel.set_preview_node(None)
+        # The ONE commit: reuses set_current_node's own board_fen() no-op
+        # guard if the snapped node is already current. From here on, the
+        # ordinary committed-navigation pipeline (MainWindow/BoardPanel/
+        # TimelinePanel's own current_node_changed reactions) takes over
+        # exactly as it would for any button click or history entry click.
+        self._session_state.set_current_node(node)
 
 
 class TimelinePanel(QWidget):
@@ -72,11 +199,37 @@ class TimelinePanel(QWidget):
     click at all; a badge is a `_moves_layout` entry that gets replaced, not
     a persistent button whose own enabled state `_rebuild()` ever touches --
     confirmed safe during the investigation, unlike the four nav buttons).
+
+    Phase 5e.2 (continuous Timeline scrubbing) adds a `_ScrubStrip` above the
+    discrete move-history row, wired to `board_panel`/`transition_controller`/
+    `scrub_controller` -- all keyword-only and optional, defaulting to
+    `None`. Existing callers that construct `TimelinePanel(session_state,
+    parent)` (unchanged positional shape) get a `_ScrubStrip` that's
+    constructed but inert: every mouse handler no-ops when these are `None`,
+    so discrete-only behavior is completely unaffected. Only
+    `MainWindow`'s full wiring activates scrubbing. `_on_current_node_changed`
+    additionally cancels any in-progress scrub and clears the board preview
+    on ANY navigation, whether it originated from this panel's own scrub
+    commit or from an external source (a branch switch, a button click) --
+    see that method's own comment.
     """
 
-    def __init__(self, session_state: SessionState, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        session_state: SessionState,
+        parent: QWidget | None = None,
+        *,
+        board_panel: BoardPanel | None = None,
+        transition_controller: TransitionController | None = None,
+        scrub_controller: ScrubController | None = None,
+        audio_controller: AudioController | None = None,
+    ) -> None:
         super().__init__(parent)
         self._session_state = session_state
+        self._board_panel = board_panel
+        self._transition_controller = transition_controller
+        self._scrub_controller = scrub_controller
+        self._audio_controller = audio_controller
         # Nodes whose sibling row is currently expanded. Persists across
         # rebuilds (so re-expanding isn't needed after every navigation);
         # entries for nodes that fall off the currently-displayed path are
@@ -92,6 +245,15 @@ class TimelinePanel(QWidget):
         self._rebuild_scheduled = False
 
         outer = QVBoxLayout(self)
+
+        self._scrub_strip = _ScrubStrip(
+            session_state,
+            board_panel,
+            transition_controller,
+            scrub_controller,
+            audio_controller=audio_controller,
+        )
+        outer.addWidget(self._scrub_strip)
 
         nav_row = QHBoxLayout()
         self._first_button = QPushButton("|◀")
@@ -127,6 +289,21 @@ class TimelinePanel(QWidget):
         self._rebuild()  # initial build: synchronous, not triggered by a click -- safe as-is
 
     def _on_current_node_changed(self, node: chess.pgn.GameNode) -> None:
+        # Phase 5e.2: cancel any in-progress scrub on ANY navigation --
+        # whether it's this panel's own scrub commit (already idle by the
+        # time this fires, so a harmless no-op) or an externally-driven
+        # change (a branch switch, a button click, a future feature) that
+        # invalidates whatever path a scrub snapshotted at press time.
+        # Cheap and idempotent, so it runs synchronously, unlike the
+        # rebuild below -- only the rebuild's setEnabled() calls were the
+        # crash-triggering part the deferral exists to avoid.
+        if self._scrub_controller is not None:
+            self._scrub_controller.cancel()
+        if self._audio_controller is not None:
+            self._audio_controller.cancel_scrub()
+        if self._board_panel is not None:
+            self._board_panel.set_preview_node(None)
+
         if self._rebuild_scheduled:
             return
         self._rebuild_scheduled = True

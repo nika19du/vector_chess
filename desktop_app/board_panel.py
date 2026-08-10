@@ -42,12 +42,29 @@ class _BoardView(QWidget):
     no difference to this logic -- there is no separate "drag" state machine
     to keep in sync with the click one, and no floating drag-follow visual
     (that is animation, out of Phase 5b's scope).
+
+    Phase 5e.2 (continuous Timeline scrubbing) adds `set_preview_node`, an
+    explicit, narrow override of what gets *painted* while the user is
+    dragging the scrub strip -- it never touches `SessionState.current_node`
+    and never touches chess state. The ownership split is deliberate and
+    total, not merely a convention: `paintEvent` is the only place that ever
+    reads `_preview_node`; `mousePressEvent`, `mouseReleaseEvent`, `_select`,
+    and `_build_move` all read `_board_node` unconditionally, exactly as
+    before this phase. A preview node can therefore never become the basis
+    for a chess move, a legal-destination highlight, or a drag/drop target
+    -- those code paths simply never look at `_preview_node`, so there is no
+    runtime guard to bypass or forget.
     """
 
     def __init__(self, session_state: SessionState, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._session_state = session_state
         self._board_node = session_state.current_node
+        # Phase 5e.2: paint-only override, set by TimelinePanel's scrub strip
+        # via BoardPanel.set_preview_node. None means "no active preview,
+        # paint _board_node as usual" -- the default, and the only state
+        # outside of an in-progress drag.
+        self._preview_node: chess.pgn.GameNode | None = None
         self._selected_square: chess.Square | None = None
         self._legal_destinations: set[chess.Square] = set()
 
@@ -56,6 +73,20 @@ class _BoardView(QWidget):
 
     def _on_current_node_changed(self, node: chess.pgn.GameNode) -> None:
         self._board_node = node
+        # Defensive: a committed navigation always supersedes any preview,
+        # even if a caller committed without first clearing it explicitly.
+        self._preview_node = None
+        self._clear_selection()
+        self.update()
+
+    def set_preview_node(self, node: chess.pgn.GameNode | None) -> None:
+        """
+        Phase 5e.2: overrides the painted board only, without touching
+        `SessionState.current_node` or `_board_node`. `None` reverts to the
+        normal `_board_node`-driven display. See the class docstring's
+        "preview vs input" split -- painting is the only consumer of this.
+        """
+        self._preview_node = node
         self._clear_selection()
         self.update()
 
@@ -75,7 +106,10 @@ class _BoardView(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
         painter = QPainter(self)
-        board = self._board_node.board()
+        # The only place _preview_node is ever read -- see the class
+        # docstring's "preview vs input" split.
+        display_node = self._preview_node if self._preview_node is not None else self._board_node
+        board = display_node.board()
 
         for rank_index in range(8):
             for file_index in range(8):
@@ -188,6 +222,10 @@ class BoardPanel(QWidget):
 
         self._update_side_to_move_label(session_state.current_node)
         session_state.current_node_changed.connect(self._update_side_to_move_label)
+
+    def set_preview_node(self, node: chess.pgn.GameNode | None) -> None:
+        """Forwards to the interactive board view -- see `_BoardView.set_preview_node`."""
+        self.board_view.set_preview_node(node)
 
     def _update_side_to_move_label(self, node: chess.pgn.GameNode) -> None:
         board = node.board()

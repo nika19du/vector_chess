@@ -11,6 +11,21 @@ the sonification rules already ratified in `docs/audio.md`.
 **Status: architecture frozen (v3) — ready for implementation.** See "Final Self-Review"
 at the end of this document.
 
+**Implementation status note (post-v3): Phase 5f (Live Audio) is complete** —
+`AudioEngine`, `AudioController`, live articulation, scrub preview, and the Mixer
+(Part 13) are all built and tested. Contrary to this document's original dependency
+claim below, 5f did **not** end up depending on Milestone 4b: the live runtime was
+built entirely on the already-complete Milestone 4/4a MVP mappings, and 4b's richer
+content (Mobility, Source Field, Source Potential, Gradient, Equipotential,
+Dynamics.intensity — still unimplemented) is additive to the now-working runtime, not
+a precondition for it. See `docs/audio.md`'s "Live Audio Runtime" section and Part 13 /
+Review Disposition #14 below for the corrected record. Two further real
+implementation-vs-design divergences worth noting up front, both corrected in Part 4.1
+and Part 5 below: Mixer state (master gain / mute / solo) is owned by `AudioController`,
+not a `SessionState.mixer_state` slice as originally designed; and `Voice` (the actual
+Voice Registry entry) holds only static `(voice_id, label, active)` metadata, not
+mute/solo state as originally described.
+
 **Revision history.**
 - **v1** — initial design across ten parts (philosophy, layout, board, visualization,
   animation, music, interaction, visual identity, technology, roadmap).
@@ -78,7 +93,7 @@ Grounding used throughout:
 | 11 | No canvas zoom/pan | **Accepted** | Part 8 |
 | 12 | Dominance encoded by hue alone; no accessibility path | **Accepted** | Part 9 — Accessibility |
 | 13 | Top-bar Freeze button contradicts Part 7's two Freeze modes | **Accepted** | Part 2, Part 8 |
-| 14 | Milestone 4b hard-blocks all of Milestone 5, but only live playback needs it | **Accepted** | Part 13 |
+| 14 | Milestone 4b hard-blocks all of Milestone 5, but only live playback needs it | **Accepted at the time; corrected post-implementation** — 5f shipped without depending on 4b (see the implementation status note above) | Part 13 |
 | 15 | Video/MIDI export bundled into the core UI milestone inflates its scope | **Accepted** | Part 13 |
 | 16 | "Solo" vocabulary claims a 1:1 layer↔voice mapping that doesn't exist (7 layers, 5 voices) | **Rejected as stated** | See below |
 | 17 | Source Potential and Ridge/Valley both claim stereo pan, colliding | **Deferred, not fixed here** | See below |
@@ -262,7 +277,7 @@ mutates another panel's internal widget state directly.**
 | `current_node` | Pointer to the tree node defining "the current position" | Board, Timeline |
 | `selection` | Currently selected/hovered square, critical point, ridge/valley chain, or MS cell | Board (hover), Canvas (click) |
 | `layer_state` | Per-registered-layer visibility / opacity / solo, keyed by `layer_id` (Part 5) | Canvas's layer strip |
-| `mixer_state` | Per-registered-voice mute / solo / volume, keyed by `voice_id` (Part 5) | Bottom mixer strip |
+| `mixer_state` *(as designed; not how 5f was actually built — see below)* | Per-registered-voice mute / solo / volume, keyed by `voice_id` (Part 5) | Bottom mixer strip |
 | `freeze_visualization`, `freeze_audio` | The two independent freeze flags | Top bar |
 | `transport_state` | Playing / Paused / Scrubbing, plus scrub position | Timeline |
 | `camera` (per canvas instance) | Pan offset + zoom scale | Canvas |
@@ -276,11 +291,27 @@ separately. This keeps the dependency one-directional (Registry code may read
 `SessionState`; `SessionState` never depends on Registry code) and avoids a circular
 import between the two.
 
+**As actually implemented (5f), `mixer_state` does not exist on `SessionState`.**
+`layer_state` was built exactly as designed above. Mixer state (master gain, per-voice
+mute, per-voice solo) turned out not to be chess/session state in the same sense —
+`AudioController` (`desktop_app/audio_controller.py`) owns it directly instead, applying
+it to every `SonificationState` it publishes, and exposes it back to the Mixer panel
+through plain read-only properties (`master_gain`/`voice_mute`/`voice_solo`) and setters
+rather than a `SessionState` signal. This keeps the same one-directional flow the design
+above was protecting (the Mixer panel still never owns audio truth of its own), just
+through `AudioController` instead of `SessionState` — see that class's own docstring for
+the full reasoning. If a second writer of mixer state is ever added (this document's
+original keyboard-shortcut precedent for `layer_state`, for example), it would need the
+same kind of sync-back signal `layer_state` already has; none exists yet because nothing
+but the Mixer panel currently writes these values.
+
 **Update propagation.** `SessionState` exposes one typed change-notification signal per
-logical slice, matching the table above row for row: a `game_tree`/`current_node`
-signal, a `selection` signal, a `layer_state` signal, a `mixer_state` signal, a
-`freeze_*` signal, a `transport_state` signal, a `camera` signal per canvas instance, and
-a `compare_state` signal — implemented as Qt signals, since PySide6 is already the
+logical slice it actually holds, matching the table above row for row except
+`mixer_state` (see above — owned by `AudioController`, not `SessionState`, so it has no
+`SessionState` signal): a `game_tree`/`current_node` signal, a `selection` signal, a
+`layer_state` signal, a `freeze_*` signal, a `transport_state` signal, a `camera` signal
+per canvas instance, and a `compare_state` signal — implemented as Qt signals, since
+PySide6 is already the
 chosen shell (Part 10). This is deliberately neither one signal per individual field
 (which would fragment into dozens of near-duplicate connections as the state grows) nor
 one monolithic "something changed" signal (which would force every panel to re-render on
@@ -320,7 +351,8 @@ one category not owned by `SessionState` at all — the per-position math result
 | Per-position math fields (Surface, Gradient, Critical Points, Ridge/Valley, Morse-Smale) | Position Cache (Part 4.3) | Populated asynchronously on first visit to a position | Canvas, Inspector |
 | Cross-move correspondence between two cached positions | Correspondence cache (Part 4.5), stored alongside the Position Cache | Computed on first request, memoized | Canvas's animation driver, Compare mode's diffing |
 | Selection / hover | `SessionState.selection` | Board, Canvas | Inspector, Canvas |
-| Layer / voice visibility, solo, mute | `SessionState.layer_state`, `mixer_state` | Canvas's layer strip, mixer strip | Canvas, Layer Registry, Voice Registry, audio engine |
+| Layer visibility, opacity | `SessionState.layer_state` | Canvas's layer strip | Canvas, Layer Registry |
+| Voice mute, solo, master gain | `AudioController` (not `SessionState` — see above) | Mixer panel | `AudioEngine` (via published `SonificationState`) |
 | Transport / freeze | `SessionState.transport_state`, `freeze_*` | Timeline, top bar | Canvas (animation driver), audio engine |
 | Camera | `SessionState.camera[canvas_id]` | Canvas's own zoom/pan handling | Canvas only |
 
@@ -568,8 +600,15 @@ strategy rather than being forced into "grid" or "point set." No such object exi
 and none is designed here; this is a documentation clarification, not new mechanism.
 
 **Design — Voice Registry (mirrors the Layer Registry).** A `VoiceDefinition` has an
-`id`, `display_name`, mute/solo state, and a contribution to the 4.6 snapshot the audio
-engine reads. The `VoiceRegistry` holds an ordered list of these; the mixer strip (Part
+`id`, `display_name`, and a contribution to the 4.6 snapshot the audio engine reads.
+**As actually implemented (5f), `Voice` (`audio/voices.py`) holds only
+`(voice_id, label, active)` — static metadata, not mute/solo state.** Mute/solo/master
+gain are owned by `AudioController` instead (see Part 4.1's `mixer_state` note above),
+mirroring exactly how `layer_state`'s dynamic visibility/opacity lives on `SessionState`
+while `LayerDefinition` itself stays static-only — the same static-registry /
+dynamic-state split this design always intended, just with the dynamic half owned by
+`AudioController` rather than `SessionState` for the reasons given there. The
+`VoiceRegistry` holds an ordered list of these; the mixer strip (Part
 2, Part 8) and the audio engine both iterate it generically. `docs/audio.md`'s five
 current voices (Harmony, Melody, Accent, Drone, Space) become five initial
 registrations. This registry decides only *how voices are discovered and iterated* — it
@@ -802,7 +841,7 @@ proceeds independently.
 | **5c** — Layer Registry & Voice Registry | Both registries (Part 5) stood up; all six field layers and five audio voices registered and togglable, layers still (non-animated); accessibility overlay toggle | 5a | Registering a seventh dummy layer, or a sixth dummy voice, requires no change to either UI strip |
 | **5d** — Correspondence & animation | Part 4.5's matching module, memoized; move-to-move animation (Part 6) | 5c | Interpolation invariants hold at t=0/t=1; a synthetic two-position pair with a known appearing/disappearing critical point matches correctly; the match is computed once per pair, not per frame |
 | **5e** — Timeline, scrubbing, branches | Continuous scrub; branch-point indicator and switching (4.4) | 5b, 5d | Scrubbing to an exact ply reproduces the same static state as jumping directly; switching branches preserves the non-active line |
-| **5f** — Live audio | Depends on **Milestone 4b**; Part 4.6's snapshot mechanism at the 20ms latency budget; mixer UI built against the Voice Registry | 5e, **4b** | Measured playback position tracks the visual scrub position within the 20ms budget; the concurrency stress test (Part 14) passes; no audible glitches under a stated GPU-load stress test |
+| **5f** — Live audio ✔ **complete (5f.1–5f.6)** | Part 4.6's snapshot mechanism at the 20ms latency budget; finite per-voice articulation (attack/plateau/decay-to-silence, not the originally-scoped always-on sustain); scrub preview (continuous morph, no retrigger); mixer UI built against the Voice Registry (master gain, mute, solo — mute wins over solo). Built entirely on Milestone 4/4a's existing mappings; did **not** end up depending on Milestone 4b (see the implementation status note at the top of this document) | 5e | Measured: mean callback time ~85µs / max ~400µs against the 20ms (20,000µs) budget — comfortably clear; scrub publication is latest-state-only (no backlog, verified by test); repeated ON/OFF + mute/solo + scrub lifecycle stress (100+ cycles) produces no stream/thread leak. Audible-quality legibility (Part 6, principle 9 in `docs/audio.md`) still requires human listening, not re-verified by this table |
 | **5g** — Inspector | Live numeric readouts; selection linking (4.2) | 5c | Every displayed number traces to a specific field in `chess_engine/models.py`, none computed ad hoc in the UI |
 | **5h** — Freeze / solo / compare | Both freeze modes; layer/voice solo; split-screen compare with independent camera | 5d, 5f | Freeze provably stops only rendering/audio, never game state; Compare diff matches a manual diff via the 4.5 correspondence module |
 | **5i** — Keyboard, zoom/pan | Full shortcut set; pan/zoom | 5c | Every mouse interaction has a working keyboard equivalent |

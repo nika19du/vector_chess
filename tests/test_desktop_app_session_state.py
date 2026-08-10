@@ -475,6 +475,80 @@ def test_same_fen_no_op_does_not_mutate_active_child_for_the_targets_path(qtbot)
 
 
 # ---------------------------------------------------------
+# active_path (Phase 5e.2: continuous Timeline scrubbing)
+# ---------------------------------------------------------
+
+
+def test_active_path_at_the_root_with_no_history_is_a_single_node():
+    state = SessionState(_root())
+    assert state.active_path() == [state.current_node]
+
+
+def test_active_path_on_a_straight_mainline_with_no_undo_matches_mainline_path():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+
+    assert state.active_path() == state.mainline_path()
+    assert state.active_path()[-1] is state.current_node
+
+
+def test_active_path_extends_past_current_node_after_undo():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+    tip = state.current_node
+    state.undo()  # current_node is now e2e4; e7e5 remains reachable via _active_child
+
+    path = state.active_path()
+
+    assert path[-1] is tip  # extends to the branch tip, past current_node
+    assert state.current_node in path
+    assert path.index(state.current_node) == len(path) - 2  # current_node is one before the tip
+
+
+def test_active_path_reflects_the_newly_active_branch_after_switching():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    old_branch_tip = state.current_node
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))  # new branch becomes active
+    new_branch_tip = state.current_node
+    state.go_to_start()
+
+    # Old branch is no longer reachable from root via _active_child; new
+    # branch (still the active child of root) is what active_path() extends
+    # forward into.
+    path = state.active_path()
+    assert new_branch_tip in path
+    assert old_branch_tip not in path
+
+
+def test_active_path_resumes_the_old_branch_after_switching_back_into_it():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    old_branch_tip = state.current_node
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))  # new branch becomes active
+
+    state.set_current_node(old_branch_tip)  # switch back into the old branch
+    state.go_to_start()
+
+    path = state.active_path()
+    assert old_branch_tip in path
+
+
+def test_active_path_does_not_duplicate_current_node_at_the_join():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+    state.undo()  # current_node = e2e4, with e7e5 still active-forward
+
+    path = state.active_path()
+    assert path.count(state.current_node) == 1
+
+
+# ---------------------------------------------------------
 # transition_state (correspondence/animation milestone)
 # ---------------------------------------------------------
 

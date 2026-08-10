@@ -61,4 +61,12 @@ consumers, not one:
   data continuously instead of one shot at a time — it does not add to or change what
   Visualization or Audio consume from the pipeline above.
 
+The live audio consumer (Phase 5f, complete) is `audio/engine.py::AudioEngine` — a
+real-time `sounddevice`-backed callback, fed by `desktop_app/audio_controller.py::
+AudioController`, the sole bridge from `SessionState`/scrub gestures to it. Both sit
+entirely downstream of this pipeline's existing `Audio` box: `AudioController` calls the
+same `audio/mapping.py::build_audio_mapping` the offline console path already uses,
+never a second mapping. See `docs/audio.md`'s "Live Audio Runtime" section for the full
+live-audio architecture (articulation, scrub preview, mixer).
+
 Full design for the live consumer: `docs/interactive_ui.md` (architecture frozen, v3).

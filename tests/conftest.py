@@ -113,6 +113,61 @@ def _run_position_cache_synchronously_in_tests(request):
         PositionCache.__init__ = original_init
 
 
+_REAL_AUDIO_HARDWARE_FILES = {
+    # This file's own purpose is asserting real-hardware AudioEngine/
+    # MainWindow behavior (device open/close, real thread cleanup) -- see
+    # its own module docstring. Every other MainWindow-constructing test
+    # file has nothing to do with audio and gets the fake backend instead.
+    "test_desktop_app_main_window_audio_scrub.py",
+}
+
+
+@pytest.fixture(autouse=True)
+def _default_main_window_to_a_fake_audio_backend_in_tests(request):
+    """
+    Phase 5f.4: `MainWindow.__init__` opens a real `sounddevice`/PortAudio
+    stream by default (`self.audio_engine.start()`, via `SoundDeviceBackend`)
+    -- correct for the real application, but this codebase's test suite
+    constructs dozens of `MainWindow()` instances across files that have
+    nothing to do with audio (canvas rendering, timeline navigation,
+    transition animation, ...). Doing that many real hardware open/close
+    cycles in one process was observed to reproduce a native access
+    violation during a full-suite run (a NEW crash signature, distinct
+    from the pre-existing scipy/GC one `test_desktop_app_transition_
+    controller.py` is already exempted for elsewhere in this file).
+
+    Mitigated here, for the test session only, with the exact same pattern
+    already used for `PositionCache` above: every `MainWindow` constructed
+    during tests gets a `FakeAudioBackend` (no real hardware, no native
+    PortAudio calls) unless its constructor call explicitly passes its own
+    `audio_backend`. Production code (`desktop_app/main.py`) never sets
+    `audio_backend`, so the real backend remains the default outside tests.
+    """
+    if request.node.fspath.basename in _REAL_AUDIO_HARDWARE_FILES:
+        yield
+        return
+
+    try:
+        from desktop_app.main_window import MainWindow
+    except ImportError:
+        yield
+        return
+
+    from audio.backend import FakeAudioBackend
+
+    original_init = MainWindow.__init__
+
+    def _fake_audio_init(self, *args, **kwargs):
+        kwargs.setdefault("audio_backend", FakeAudioBackend())
+        original_init(self, *args, **kwargs)
+
+    MainWindow.__init__ = _fake_audio_init
+    try:
+        yield
+    finally:
+        MainWindow.__init__ = original_init
+
+
 def ready_cache_entry(board):
     """
     Shared test helper (Phase 5c): a real, fully-computed READY `CacheEntry`
