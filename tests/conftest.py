@@ -41,7 +41,14 @@ class _ImmediateExecutor:
         pass
 
 
-_REAL_THREADING_EXEMPT_FILES = {"test_desktop_app_position_cache.py"}
+_REAL_THREADING_EXEMPT_FILES = {
+    "test_desktop_app_position_cache.py",
+    # Stability investigation (see desktop_app/position_cache.py's "Shutdown
+    # contract" docstring): this file's own purpose is asserting the real
+    # shutdown/threading contract, so it needs the real ThreadPoolExecutor
+    # too, for the same reason test_desktop_app_position_cache.py is exempt.
+    "test_desktop_app_position_cache_stress.py",
+}
 
 
 @pytest.fixture(autouse=True)

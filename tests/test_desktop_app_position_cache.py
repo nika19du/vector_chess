@@ -1,9 +1,43 @@
 import threading
 
 import chess
+import pytest
 
 from analysis.attack_influence import build_attack_influence_field
 from desktop_app.position_cache import CacheEntryState, PositionCache
+
+
+@pytest.fixture(autouse=True)
+def _shutdown_every_real_cache_after_each_test():
+    """
+    Stability investigation (see `desktop_app/position_cache.py`'s "Shutdown
+    contract" docstring): this file is exempt from `tests/conftest.py`'s
+    synchronous-executor mitigation specifically so its tests exercise a
+    *real* `ThreadPoolExecutor` -- which means every `PositionCache()`
+    constructed here previously leaked its worker thread for the rest of the
+    pytest session (nothing called `.shutdown()`). Confirmed as a real,
+    residual contributor to the original crash: with a second real-threading
+    file added during this investigation, a full-suite run still crashed at
+    a low rate (1/15) with two idle-but-never-joined worker threads from
+    this file's own earlier tests still alive at the time. Tracking every
+    real instance here and shutting it down at teardown -- purely cleanup,
+    after each test's own assertions have already run -- closes that gap
+    without touching what any test actually verifies.
+    """
+    instances: list[PositionCache] = []
+    original_init = PositionCache.__init__
+
+    def _tracking_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        instances.append(self)
+
+    PositionCache.__init__ = _tracking_init
+    try:
+        yield
+    finally:
+        PositionCache.__init__ = original_init
+        for cache in instances:
+            cache.shutdown()
 
 
 def test_get_on_an_unrequested_position_is_missing():

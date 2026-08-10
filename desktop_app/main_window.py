@@ -3,6 +3,7 @@ from __future__ import annotations
 import chess
 import chess.pgn
 import numpy as np
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QGridLayout, QLabel, QMainWindow, QWidget
 
 from desktop_app.board_panel import BoardPanel
@@ -17,6 +18,7 @@ from desktop_app.layers.morse_smale_layer import MORSE_SMALE_LAYER
 from desktop_app.layers.ridge_valley_layer import RIDGE_VALLEY_LAYER
 from desktop_app.position_cache import CacheEntryState, PositionCache
 from desktop_app.session_state import SessionState
+from desktop_app.timeline_panel import TimelinePanel
 from desktop_app.transition_controller import TransitionController
 
 # Registration order == draw order (docs/interactive_ui.md Part 5's "Layer
@@ -73,6 +75,17 @@ class MainWindow(QMainWindow):
     directly, and it either animates to it or settles instantly (no prior
     position, or already there), calling `_render_all_layers` back only
     once settled. `_render_all_layers` itself is unchanged.
+
+    Timeline / history navigation (Phase 5e, discrete navigation only --
+    continuous scrubbing is a deferred follow-up, see the milestone plan):
+    `self.timeline_panel` (`desktop_app/timeline_panel.py`) is the bottom
+    transport strip. It calls only `SessionState` navigation methods
+    (`go_to_start`/`undo`/`redo`/`go_to_end`/`set_current_node`) and never
+    touches `self.canvas`, `self.board_panel`, `self.position_cache`, or
+    `self.transition_controller` directly -- Timeline-driven navigation
+    reaches all of those exactly the way a move/undo/redo already does,
+    through `current_node_changed` and the two handlers below. No change to
+    either handler was needed for this.
     """
 
     def __init__(self, initial_board: chess.Board | None = None) -> None:
@@ -105,6 +118,7 @@ class MainWindow(QMainWindow):
             position_cache=self.position_cache,
             on_settled=self._render_all_layers,
         )
+        self.timeline_panel = TimelinePanel(self.session_state, self)
 
         central = QWidget(self)
         layout = QGridLayout(central)
@@ -113,18 +127,22 @@ class MainWindow(QMainWindow):
         # below it, right column only -- matching the frozen mockup's panel
         # roles (board = input, canvas = biggest panel, layer strip = its
         # own controls beneath it), not a redesign of Part 2's fuller
-        # top-bar/inspector/transport-strip layout, which remains out of
-        # this milestone's scope.
+        # top-bar/inspector layout, which remains out of this milestone's
+        # scope. The timeline panel is the one piece of Part 2's bottom
+        # transport strip built so far (Phase 5e) -- it spans both columns,
+        # beneath the board and canvas/layer-strip columns alike.
         header = QLabel("VectorChess")
         header.setStyleSheet("font-weight: bold; font-size: 16px; padding: 4px;")
         layout.addWidget(header, 0, 0, 1, 2)
         layout.addWidget(self.board_panel, 1, 0, 2, 1)
         layout.addWidget(self.canvas, 1, 1)
         layout.addWidget(self.layer_panel, 2, 1)
+        layout.addWidget(self.timeline_panel, 3, 0, 1, 2)
         layout.setColumnStretch(0, 0)
         layout.setColumnStretch(1, 1)
         layout.setRowStretch(1, 3)
         layout.setRowStretch(2, 1)
+        layout.setRowStretch(3, 0)
         central.setLayout(layout)
         self.setCentralWidget(central)
 
@@ -132,6 +150,19 @@ class MainWindow(QMainWindow):
         self.session_state.current_node_changed.connect(self._on_current_node_changed)
         self.session_state.layer_state_changed.connect(self._on_layer_state_changed)
         self.position_cache.request(self.session_state.current_node.board())
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """
+        Stability investigation (see `desktop_app/position_cache.py`'s
+        "Shutdown contract" docstring): blocks until `self.position_cache`'s
+        worker thread(s) have actually exited, *before* Qt starts tearing
+        down this window and the `PositionCache` it owns -- closing this gap
+        is what makes it impossible for a still-running analysis worker to
+        try to publish a result into a `PositionCache`/`MainWindow` that's
+        already being destroyed.
+        """
+        self.position_cache.shutdown()
+        super().closeEvent(event)
 
     def _on_current_node_changed(self, node: chess.pgn.GameNode) -> None:
         fen = self.position_cache.request(node.board())

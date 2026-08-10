@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -67,6 +68,31 @@ class PositionCache(QObject):
     No LRU eviction and no prefetch yet: eviction sizing (Part 4.3's 200-entry
     default) and prefetch are both relative to a scrub position that doesn't
     exist until the timeline (Phase 5e). Deferred to the phase that needs them.
+
+    Shutdown contract (stability investigation, see `scripts/
+    repro_position_cache_crash.py` and its evidence): a `PositionCache`
+    that is simply dropped without calling `shutdown()` leaks its
+    `ThreadPoolExecutor`'s worker thread(s) -- they keep running whatever
+    `build_full_position_analysis` call they were mid-flight on for as long
+    as it takes, unjoined. A leaked worker still executing scipy-heavy
+    analysis code, combined with a *later*, unrelated `position_ready.emit()`
+    (from this instance or any other) being delivered to a connected slot
+    while that worker is still running, is a confirmed, reproducible cause of
+    an intermittent native (Windows access-violation) crash -- confirmed via
+    a standalone harness (54% crash rate with a connected slot vs. 0% with no
+    slot connected, otherwise identical leak shape, N=600 each) and via the
+    real full-test-suite reproduction (a leaked `ThreadPoolExecutor` worker
+    caught mid-`analysis/morse_smale.py` while the main thread pumped Qt
+    events for a later, unrelated test). `shutdown()` exists specifically to
+    make this impossible: called before this cache (and the Qt objects that
+    own it) are torn down, it (1) stops `request()` from scheduling any more
+    work, (2) cancels not-yet-started queued work, (3) lets any
+    already-running analysis finish (there is no safe way to abort native
+    scipy work mid-call), (4) blocks until every worker thread it owns has
+    actually exited, and (5) guarantees no `position_ready` reaches a slot
+    once shutdown has begun -- so by the time `shutdown()` returns, no worker
+    can still be racing whatever Qt teardown happens next. See
+    `MainWindow.closeEvent` for the production call site.
     """
 
     position_ready = Signal(str)  # emits the fen that just became READY
@@ -80,6 +106,12 @@ class PositionCache(QObject):
         self._builder = builder
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
         self._entries: dict[str, CacheEntry] = {}
+        # Set by shutdown() -- request() checks it to stop scheduling new
+        # work, and _on_computed() checks it to stop publishing into Qt
+        # objects that may already be torn down. A threading.Event (not a
+        # plain bool) because _on_computed reads it from a worker thread
+        # while shutdown() sets it from the GUI thread.
+        self._shutdown_requested = threading.Event()
 
     def get(self, fen: str) -> CacheEntry:
         return self._entries.get(fen, _MISSING_ENTRY)
@@ -90,8 +122,17 @@ class PositionCache(QObject):
         done. Returns the FEN key. A second call for a position already
         COMPUTING or READY returns immediately without submitting another
         computation -- duplicate requests never trigger duplicate work.
+
+        A no-op (beyond computing and returning the FEN) once `shutdown()`
+        has been called: no entry is created and no work is scheduled. This
+        is the deterministic behavior the shutdown contract requires for any
+        `request()` call that arrives after teardown has begun, rather than
+        whatever `ThreadPoolExecutor.submit` on a shut-down executor happens
+        to raise.
         """
         fen = board.board_fen()
+        if self._shutdown_requested.is_set():
+            return fen
         if fen in self._entries:
             return fen
 
@@ -110,11 +151,25 @@ class PositionCache(QObject):
             state=CacheEntryState.READY,
             analysis=analysis,
         )
+        if self._shutdown_requested.is_set():
+            # Shutdown contract point 6: never deliver a signal once teardown
+            # has begun -- the Qt objects a queued cross-thread emit would
+            # marshal into may already be destroyed/destructing by the time
+            # this callback runs.
+            return
         # Thread-safe regardless of which thread calls emit(): PySide6 queues
         # delivery to slots living on a different thread than the emitter --
         # this is the "safe publication back to the UI" the architecture asks
         # for, via Qt's own mechanism rather than a custom lock.
         self.position_ready.emit(fen)
 
-    def shutdown(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
+    def shutdown(self, wait: bool = True) -> None:
+        """
+        Stops accepting new requests, cancels queued-but-not-started work,
+        lets any already-running analysis finish safely, and (with the
+        default `wait=True`) blocks until every worker thread this cache
+        owns has actually exited -- see the class docstring's "Shutdown
+        contract" section. Safe to call more than once.
+        """
+        self._shutdown_requested.set()
+        self._executor.shutdown(wait=wait, cancel_futures=True)

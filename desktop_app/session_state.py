@@ -72,6 +72,14 @@ class SessionState(QObject):
     `.variation` on the current node), and the root is always reachable later
     via `.parent` if a future phase (5e's Timeline) needs it. Adding it now,
     with no consumer, would be speculative.
+
+    Phase 5e (Timeline/history navigation): `_active_child` replaces the
+    earlier LIFO `_redo_stack`. A Timeline can jump to any node directly
+    (click a distant move, click into a sibling branch), not just walk one
+    step at a time, so "the node most recently undone" is no longer a rich
+    enough concept -- what's needed is "the child to follow forward from
+    *any* node," recorded for every node on a navigation's path, not only the
+    one being left. See `_mark_active_path`.
     """
 
     current_node_changed = Signal(object)  # emits the new chess.pgn.GameNode
@@ -86,18 +94,55 @@ class SessionState(QObject):
         self._transition_state = TransitionState(
             from_fen=None, to_fen=initial_node.board().board_fen(), progress=1.0
         )
-        # Multi-level redo: each undo() pushes the node being left; make_move()
-        # with a genuinely new move (not a replay of an existing branch)
-        # invalidates it, matching standard undo/redo semantics.
-        self._redo_stack: list[chess.pgn.GameNode] = []
+        # Records, per node, which child was most recently navigated to from
+        # it -- by play, undo/redo, or a Timeline jump -- so redo()/
+        # go_to_end() know which way to go forward from any node, not just
+        # the one most recently left. Keyed by the GameNode object itself
+        # (default identity hash/eq -- GameNode defines neither): every node
+        # in the tree is kept alive for as long as SessionState holds any
+        # node (parent links up, variations link back down through the whole
+        # tree), so nothing here can go stale or collide.
+        #
+        # Entries for a branch navigated away from (undo + a different move,
+        # or switching into a sibling branch) are never deleted, only
+        # shadowed by whichever branch is active now -- they resurface
+        # correctly if the user returns to that branch later, so
+        # go_to_end() resumes exactly where that branch was last left. This
+        # is intentional per-branch memory, bounded by the size of the game
+        # tree itself (already retained in full), not a leak.
+        self._active_child: dict[chess.pgn.GameNode, chess.pgn.GameNode] = {}
 
     @property
     def current_node(self) -> chess.pgn.GameNode:
         return self._current_node
 
+    def _mark_active_path(self, node: chess.pgn.GameNode) -> None:
+        """
+        Records `node` as reachable-forward from every ancestor on its root
+        path -- "this is the line to follow forward from here" -- for every
+        node along the way up to the root. Idempotent, O(depth).
+        """
+        child = node
+        parent = child.parent
+        while parent is not None:
+            self._active_child[parent] = child
+            child = parent
+            parent = child.parent
+
     def set_current_node(self, node: chess.pgn.GameNode) -> None:
         if node.board().board_fen() == self._current_node.board().board_fen():
             return
+        # Marking must happen AFTER the equality guard above, not before:
+        # board_fen() compares piece placement only, so two nodes on
+        # different branches (a transposition, or a simple repetition) can
+        # compare equal without being the same tree node. Marking
+        # unconditionally would silently rewrite _active_child for a path
+        # the current node never actually moved onto whenever such a no-op
+        # call happens -- a time-displaced desync between what
+        # redo()/go_to_end() do next and what the user actually navigated
+        # to. Gating marking on the same guard that gates the real
+        # navigation closes this.
+        self._mark_active_path(node)
         self._current_node = node
         self.current_node_changed.emit(node)
 
@@ -113,6 +158,13 @@ class SessionState(QObject):
         always calling add_variation(), so replaying a move that was just
         undone (or manually re-clicking the same move) re-enters the same
         branch instead of creating a duplicate sibling.
+
+        No explicit "invalidate pending redo" step is needed here: a
+        genuinely new branch still runs through set_current_node() below,
+        whose _mark_active_path() reassigns this node's active child to
+        whichever node was actually just navigated to -- uniformly, whether
+        that's a brand-new branch, a reused existing child, or (via other
+        entry points) an ancestor or a distant Timeline jump.
         """
         candidate_board = self._current_node.board()
         details = execute_move(candidate_board, move.uci())
@@ -123,9 +175,6 @@ class SessionState(QObject):
             next_node = self._current_node.variation(move)
         else:
             next_node = self._current_node.add_variation(move)
-            # A genuinely new branch invalidates any pending redo -- redoing
-            # into a line that a new move just diverged from would be wrong.
-            self._redo_stack.clear()
 
         self.set_current_node(next_node)
         return details
@@ -134,16 +183,55 @@ class SessionState(QObject):
         parent = self._current_node.parent
         if parent is None:
             return False
-        self._redo_stack.append(self._current_node)
         self.set_current_node(parent)
         return True
 
     def redo(self) -> bool:
-        if not self._redo_stack:
+        next_node = self._active_child.get(self._current_node)
+        if next_node is None:
             return False
-        target = self._redo_stack.pop()
-        self.set_current_node(target)
+        self.set_current_node(next_node)
         return True
+
+    def can_redo(self) -> bool:
+        return self._active_child.get(self._current_node) is not None
+
+    def go_to_start(self) -> None:
+        """Jumps to the tree root in one navigation/one transition."""
+        node = self._current_node
+        while node.parent is not None:
+            node = node.parent
+        self.set_current_node(node)
+
+    def go_to_end(self) -> None:
+        """
+        Walks the active line forward to its current tip via
+        `_active_child`, then jumps there in ONE set_current_node call --
+        one transition to the final target, not one per intermediate ply.
+        """
+        node = self._current_node
+        while True:
+            next_node = self._active_child.get(node)
+            if next_node is None:
+                break
+            node = next_node
+        self.set_current_node(node)
+
+    def mainline_path(self) -> list[chess.pgn.GameNode]:
+        """
+        Root-to-current_node path, root first -- the line currently on
+        screen, for a Timeline widget to render. Always derived from
+        `.parent`, never from `_active_child`, so it reflects the line
+        actually displayed regardless of what's recorded elsewhere in the
+        tree.
+        """
+        path: list[chess.pgn.GameNode] = []
+        node: chess.pgn.GameNode | None = self._current_node
+        while node is not None:
+            path.append(node)
+            node = node.parent
+        path.reverse()
+        return path
 
     def layer_visible(self, layer_id: str) -> bool:
         return self._layer_state.get(layer_id, True)

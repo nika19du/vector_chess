@@ -299,6 +299,182 @@ def test_a_new_branch_after_undo_invalidates_pending_redo(qtbot):
 
 
 # ---------------------------------------------------------
+# Timeline navigation (go_to_start / go_to_end / can_redo / mainline_path)
+# and per-branch active-child memory (Phase 5e)
+# ---------------------------------------------------------
+
+
+def test_can_redo_reflects_whether_a_forward_target_exists():
+    state = SessionState(_root())
+    assert state.can_redo() is False
+
+    state.make_move(chess.Move.from_uci("e2e4"))
+    assert state.can_redo() is False  # at the tip, nothing to redo to
+
+    state.undo()
+    assert state.can_redo() is True  # e2e4 is recorded as the active child of root
+
+
+def test_go_to_start_jumps_to_the_root_from_a_deep_node(qtbot):
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+    root = state.mainline_path()[0]
+
+    with qtbot.waitSignal(state.current_node_changed, timeout=1000):
+        state.go_to_start()
+
+    assert state.current_node is root
+    assert state.current_node.move is None
+
+
+def test_go_to_start_is_a_no_op_at_the_root(qtbot):
+    state = SessionState(_root())
+    root_node = state.current_node
+
+    received = []
+    state.current_node_changed.connect(lambda node: received.append(node))
+
+    state.go_to_start()
+    qtbot.wait(50)
+
+    assert state.current_node is root_node
+    assert received == []
+
+
+def test_go_to_end_walks_the_active_line_to_its_tip_in_one_jump(qtbot):
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+    tip = state.current_node
+    state.go_to_start()
+
+    with qtbot.waitSignal(state.current_node_changed, timeout=1000) as blocker:
+        state.go_to_end()
+
+    assert state.current_node is tip
+    # One jump, one signal emission -- not one per intermediate ply.
+    assert blocker.args[0] is tip
+
+
+def test_go_to_end_is_a_no_op_when_already_at_the_tip(qtbot):
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+
+    received = []
+    state.current_node_changed.connect(lambda node: received.append(node))
+
+    state.go_to_end()
+    qtbot.wait(50)
+
+    assert received == []
+
+
+def test_mainline_path_returns_root_to_current_in_order():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+
+    path = state.mainline_path()
+
+    assert len(path) == 3
+    assert path[0].move is None  # root
+    assert path[1].move == chess.Move.from_uci("e2e4")
+    assert path[2].move == chess.Move.from_uci("e7e5")
+    assert path[-1] is state.current_node
+
+
+def test_mainline_path_at_the_root_is_a_single_node():
+    state = SessionState(_root())
+    path = state.mainline_path()
+    assert path == [state.current_node]
+
+
+def test_go_to_end_follows_the_new_branch_after_undo_and_a_different_move():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))  # a new branch from root
+    new_branch_tip = state.current_node
+
+    state.go_to_start()
+    state.go_to_end()
+
+    assert state.current_node is new_branch_tip
+
+
+def test_go_to_end_resumes_the_old_branch_after_switching_back_into_it():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    old_branch_tip = state.current_node
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))  # new branch becomes active
+
+    # Simulate a Timeline click directly into the old sibling branch --
+    # switching branches is nothing more than a direct set_current_node call.
+    state.set_current_node(old_branch_tip)
+    state.go_to_start()
+
+    state.go_to_end()
+
+    assert state.current_node is old_branch_tip
+
+
+def test_distant_jump_marks_the_entire_path_as_active():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+    state.make_move(chess.Move.from_uci("g1f3"))
+    deep_node = state.current_node
+    state.go_to_start()
+
+    # A single direct jump several plies away (simulating a Timeline click on
+    # a distant history entry), not a sequence of redo() calls.
+    state.set_current_node(deep_node)
+    state.go_to_start()
+
+    assert state.redo() is True
+    assert state.redo() is True
+    assert state.redo() is True
+    assert state.current_node is deep_node
+
+
+def test_same_fen_no_op_does_not_mutate_active_child_for_the_targets_path(qtbot):
+    # set_current_node must no-op (no marking, no signal) whenever the
+    # target's board_fen() matches the current position's -- even if the
+    # target is a genuinely different GameNode with its own real ancestor
+    # chain (a transposition/repetition). This is the regression test for
+    # the ordering fix: _mark_active_path must run AFTER the equality guard,
+    # not before (see SessionState.set_current_node's comment).
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+    real_tip = state.current_node
+
+    # A decoy tree, entirely disconnected from `state`'s own tree, whose tip
+    # reaches the exact same position via the exact same moves -- same
+    # board_fen(), but different GameNode objects and a different (decoy)
+    # parent chain.
+    decoy_root = chess.pgn.Game()
+    decoy_mid = decoy_root.add_variation(chess.Move.from_uci("e2e4"))
+    decoy_tip = decoy_mid.add_variation(chess.Move.from_uci("e7e5"))
+    assert decoy_tip.board().board_fen() == real_tip.board().board_fen()
+
+    received = []
+    state.current_node_changed.connect(lambda node: received.append(node))
+
+    state.set_current_node(decoy_tip)  # same fen as current -> must no-op
+    qtbot.wait(50)
+
+    assert received == []
+    assert state.current_node is real_tip
+    # The decoy's own ancestor edges must never have been recorded --
+    # _mark_active_path must not have run for this no-op call.
+    assert state._active_child.get(decoy_mid) is not decoy_tip
+    assert state._active_child.get(decoy_root) is not decoy_mid
+
+
+# ---------------------------------------------------------
 # transition_state (correspondence/animation milestone)
 # ---------------------------------------------------------
 
