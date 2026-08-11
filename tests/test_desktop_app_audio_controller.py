@@ -306,7 +306,14 @@ def test_playing_a_different_move_after_undo_creates_a_branch_with_fresh_analysi
     assert len(engine.published) == 4  # e4, e5, undo->e4, b8c6
     branch_state = engine.published[3]
     main_line_state = engine.published[1]  # the original e5 node's state
-    assert branch_state.pitch_hz != main_line_state.pitch_hz  # e5 vs c6 destination squares differ
+    # Phase B1: pitch is no longer a reliable "this is genuinely
+    # different data" proxy -- e5 and c6 now happen to quantize to the
+    # same scale tone under the compressed 2-octave register (lossy by
+    # design: 64 squares snap to 15 discrete tones, preserving ordering
+    # but not uniqueness). segment_key is the FEN-pair identity itself
+    # and is guaranteed to differ for a genuinely different branch
+    # regardless of any future pitch/scale tuning.
+    assert branch_state.segment_key != main_line_state.segment_key
 
 
 def test_switching_back_to_the_original_branch_reuses_its_cached_state(qapp):

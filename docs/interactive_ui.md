@@ -239,6 +239,118 @@ a variation point in the game tree (Part 4.4). The mixer row is now driven by th
 Registry (Part 5) rather than five hardcoded names, though the default five voices'
 labels are unchanged.
 
+### Implementation note (V0–V7) — what the desktop app actually does
+
+The mockup above is the design target; the implemented `desktop_app/` layout differs in
+several ways the design phase didn't anticipate, all measured and fixed across the V0–V7
+milestones rather than designed up front. No Inspector panel exists yet (Part 4's own
+scope note) beyond the Layers panel described below. As of V7 (desktop workspace layout),
+the built layout is `QMainWindow` → a central widget with an outer `QVBoxLayout` of bands:
+a header row, one primary workspace row, the Timeline strip, then the Live Audio mixer
+strip — each band stacked top to bottom. The primary workspace row is itself a nested
+`QHBoxLayout` holding three ordinary, non-spanning siblings side by side: `BoardPanel`,
+`MathCanvas`, and `LayerPanel`, with stretch factors `5 : 5 : 3` — board and canvas take
+the majority, co-primary share, and the freed width that used to sit unused as dead
+letterbox background around the canvas (previously a `QGridLayout` with the canvas column
+stretched 4× wider than the board column) now goes to `LayerPanel` as a real inspector
+column instead. `TimelinePanel` and `AudioMixerPanel` each span the full window width
+below the workspace row, in that order.
+
+V0–V6a's `QGridLayout` gave `BoardPanel` a `rowSpan=2` so `LayerPanel` could sit in a
+second row beneath the canvas; V7 removed that row-sharing arrangement entirely by giving
+`LayerPanel` its own column in the same row as board and canvas, which also structurally
+resolved the `QGridLayout` row-spanning column-stretch limitation described in earlier
+revisions of this note (see "Board's fixed 400×400 size" below for what that unblocked,
+and what it didn't).
+
+**Responsive behavior.** `MathCanvas` is given `setMinimumHeight(MIN_BOARD_PIXELS)` (400px
+— the same floor governing the board) so it can never collapse into a decorative strip
+regardless of the active system font. This closes a real bug found during the V6 audit:
+under real on-screen Windows rendering (the actual "Segoe UI" system font, ~24px checkbox
+rows) versus the automated test suite's offscreen platform (a smaller fallback font, ~17px
+rows), `LayerPanel`/`AudioMixerPanel`'s uncapped natural height was enough to starve the
+canvas down to as little as 55px tall at 1280×720/1366×768 — a bug the offscreen-only test
+suite structurally could not have caught, since it never exercises real font metrics.
+
+V6a's fix bounded both panels' entire variable-length content (LayerPanel's six layer rows
+*and* its legend together; AudioMixerPanel's whole per-voice mute/solo grid) inside one
+shared fixed-height internal `QScrollArea` each. That shared budget turned out to have a
+second, worse failure mode of its own: a real running app could land on a scroll position
+showing only the legend, with every layer checkbox/opacity-slider/preset combo scrolled
+out of view entirely (visible in a live screenshot that motivated V7), and
+`VOICE_GRID_SCROLL_HEIGHT_PX` (40px) could not fit even one full mute/solo row, let alone
+a header plus five voice rows, cutting every voice row off below the visible window.
+
+V7 fixes both at the root rather than re-tuning the same budget. `LayerPanel`'s preset
+combo and all six layer checkboxes/opacity sliders now live directly in the panel's own
+layout, never inside a `QScrollArea` — structurally guaranteed visible, with no scroll
+position that can hide them. Only the Legend (reference material, read occasionally) keeps
+its own, separate `QScrollArea`. `AudioMixerPanel`'s voice-grid `QScrollArea` height is now
+computed from the grid's own real `sizeHint()` after all voice rows are built, rather than
+a hardcoded constant, so every registered voice's Mute/Solo row is always visible. Both
+panels now sit as ordinary siblings in the primary workspace row (or, for the mixer, its
+own full-width band) with real, content-driven height instead of a small arbitrary ceiling.
+`tests/test_desktop_app_responsive_layout.py` and `tests/test_desktop_app_layout_regression.py`
+carry dedicated, explicitly real-rendering-gated regression tests for the original
+font-metrics bug (skipped, with an honest reason, under the suite's default offscreen
+platform — re-run with `QT_QPA_PLATFORM` unset on a machine with a display to exercise them
+for real), plus offscreen-run structural assertions that the layer controls are never
+descendants of any `QScrollArea` at any target resolution.
+
+**Board's fixed 400×400 size.** The board is bounded `[MIN_BOARD_PIXELS=400,
+BOARD_PIXELS=480]` and, measured at every supported target resolution (1280×720 through
+1920×1080) on both the offscreen test platform and real on-screen rendering, always
+renders at exactly 400×400 — square, legible, never distorted, but never growing toward
+its 480px ceiling on a larger window. Through V6a, the documented root cause was that
+`QGridLayout` does not grow a row-spanning item's column width via `setColumnStretch` even
+with a valid `sizeHint`, an `Expanding` size policy, and an explicit stretch factor all set
+correctly. V7 removed that row span entirely (see above), and confirmed via direct
+measurement that board width *does* grow again once the span is gone. V7 also confirmed,
+empirically, that letting both axes grow independently does not keep the board square:
+width is governed by the primary workspace row's `QHBoxLayout` column allocation while
+height is governed by `BoardPanel`'s own internal `QVBoxLayout` stretch, two genuinely
+separate layout computations with nothing coupling them, and measured the result as a real
+non-square regression (480×422 at 1366×768). Qt's `heightForWidth`/`hasHeightForWidth`
+mechanism was tried as the sanctioned, non-hacky fix for exactly this kind of coupling and
+measured, empirically, to have zero effect: Qt's box-layout stretch redistribution grows an
+`Expanding` item toward its own fixed `maximumSize` using leftover space, independent of
+`heightForWidth`, which only informs preferred/minimum sizing rather than that
+redistribution. A `resizeEvent`-driven manual coupling was ruled out as exactly the kind of
+fragile, jitter-prone workaround this project avoids. `MainWindow` therefore pins
+`board_view.setMaximumWidth(MIN_BOARD_PIXELS)` directly, keeping both axes governed
+identically and the board reliably square — the same accepted, documented, non-blocking
+400×400 limitation as before V7 (400px/side remains fully usable for click-to-move), now
+enforced directly rather than as a side effect of the old row-spanning bug, and left for a
+future milestone rather than solved with a fragile workaround.
+
+**Layer presets.** Five named presets exist over the six registered layers — Overview
+(the default, identical to `SessionState`'s own default visibility/opacity), Influence,
+Flow, Topology, and All Layers — selectable from a combo box in the Layers panel, with a
+"Custom" state inferred (never stored separately) whenever the current visibility/opacity
+doesn't exactly match any preset. See `desktop_app/layer_presets.py`.
+
+**Critical-point glyph language.** Critical points render as shape-coded glyphs matching
+the reference matplotlib markers, not color alone: maximum = filled triangle-up, minimum =
+filled triangle-down, saddle = X (two crossed line segments), degenerate = hollow ring.
+See `desktop_app/layers/_critical_point_glyphs.py`.
+
+**Known, intentional rendering divergences from the matplotlib reference.**
+Equipotential's reference line width (0.7) is below the real cross-vendor floor of
+`glLineWidth` (1.0 by spec) and is clamped up to `MIN_GL_LINE_WIDTH`, rather than left
+unreachable. Gradient renders every vector at one constant line width per frame (the
+reference's own per-vector formula's floor) instead of reproducing its true per-vector
+width variation — per-vector strength is still preserved through alpha, only the width
+dimension is flattened; reproducing true per-vector width would require geometry-based
+(triangle-strip) line rendering, out of scope for the current milestone. Neither
+divergence is a defect; both are documented in code (`desktop_app/layers/
+equipotential_layer.py`, `desktop_app/layers/gradient_layer.py`) and covered by dedicated
+regression tests (`tests/test_desktop_app_line_width_hierarchy.py`).
+
+Source Potential (`analysis/source_potential.py`, `visualization/source_potential_plot.py`)
+has no desktop layer and is not one of the six registered layers — analysis/reference
+implementations exist, but no `desktop_app` code references it. This is an intentional
+scope gap, not a bug.
+
 ---
 
 ## Part 3 — Interactive Chess Board
@@ -590,6 +702,14 @@ Influence, Surface, Gradient, Equipotential, Critical Points, Ridge/Valley, Mors
 become six `LayerDefinition` registrations in the same dependency order established from
 v1 — board squares/pieces remain outside the registry, since they aren't derived from
 `analysis/` output.
+
+**Source Potential is not one of the six.** `analysis/source_potential.py` and its
+reference plot (`visualization/source_potential_plot.py`) exist, same as every other
+math-derived object, but no `LayerDefinition` registers it and
+`FullPositionAnalysis` doesn't carry its field — this is a deliberate, tracked scope
+gap (interactive milestones 5a–5f registered the other six first), not a mathematical
+defect or a coordinate-fidelity issue. Adding it is future work for whichever milestone
+picks up the next `LayerDefinition`, not implied by anything in this Part.
 
 **Animator is an open strategy, not a closed pair.** Grid lerp and Part 4.5's
 point-correspondence matching are the two built-in implementations needed by the six

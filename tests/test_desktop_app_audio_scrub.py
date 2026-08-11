@@ -106,7 +106,26 @@ def test_scrub_at_the_tip_reproduces_the_settled_state_via_the_identity_segment_
     controller.update_scrub(ScrubPosition(path_index=len(path) - 1, t=0.0))
 
     scrub_state = engine.published[-1]
-    assert scrub_state.harmony_interval_ratio == pytest.approx(settled_nf3_state.harmony_interval_ratio)
+    # Phase B1: a committed move's harmony_interval_ratio is now
+    # snapped to HARMONY_INTERVAL_VOCABULARY (see
+    # audio.mapping.build_audio_mapping), while scrub preview
+    # deliberately keeps calling the raw, continuous
+    # harmony_interval_for_balance directly (see that function's own
+    # docstring) so a drag gesture still glides smoothly. The identity-
+    # segment trick therefore no longer reproduces the settled state's
+    # *quantized* ratio bit-for-bit -- it reproduces the same *raw*
+    # value harmony_interval_for_balance gives for this move's own
+    # balance, which is the correct ground truth for a continuous
+    # preview. Discrete, move-identity fields (pitch/richness/loudness)
+    # are unaffected -- both paths read them from the same already-
+    # quantized segment_mapping.pitch_hz, held fixed per segment.
+    board = chess.Board()
+    for move_text in ["e2e4", "e7e5", "g1f3"]:
+        board.push(chess.Move.from_uci(move_text))
+    nf3_balance = build_attack_influence_field(board).balance
+    expected_ratio = harmony_interval_for_balance(nf3_balance, is_check=False)
+
+    assert scrub_state.harmony_interval_ratio == pytest.approx(expected_ratio)
     assert scrub_state.pitch_hz == settled_nf3_state.pitch_hz
     assert scrub_state.loudness == settled_nf3_state.loudness
 
@@ -496,7 +515,11 @@ def test_scrub_after_a_branch_switch_uses_the_new_branchs_own_analysis(qapp):
     scrub_state = engine.published[-1]
     nc6_settled_state = engine.published[3]  # the b8c6 commit's own publish
     assert scrub_state.pitch_hz == pytest.approx(nc6_settled_state.pitch_hz)
-    assert scrub_state.pitch_hz != pytest.approx(engine.published[1].pitch_hz)  # not e5's pitch
+    # Phase B1: pitch alone is no longer a reliable "not the old
+    # branch's data" proxy -- e5 and c6 can legitimately quantize to
+    # the same scale tone under the compressed 2-octave register.
+    # segment_key (the FEN-pair identity) is the robust check.
+    assert scrub_state.segment_key != engine.published[1].segment_key  # not e5's segment
 
 
 # ---------------------------------------------------------

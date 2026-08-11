@@ -2,16 +2,19 @@ import dataclasses
 
 import chess
 import numpy as np
+from matplotlib.figure import Figure
 from OpenGL import GL
 
 from analysis.geometry import math_to_plot_coords
 from desktop_app.full_position_analysis import build_full_position_analysis
+from desktop_app.layers.attack_influence_layer import build_attack_influence_frame
 from desktop_app.layers.critical_points_layer import build_critical_points_frame, render_critical_points_frame
 from desktop_app.layers.equipotential_layer import build_equipotential_frame, render_equipotential_frame
 from desktop_app.layers.gradient_layer import build_gradient_frame, render_gradient_frame
 from desktop_app.layers.morse_smale_layer import build_morse_smale_frame, render_morse_smale_frame
 from desktop_app.layers.ridge_valley_layer import build_ridge_valley_frame, render_ridge_valley_frame
 from desktop_app.position_cache import CacheEntry, CacheEntryState
+from visualization.attack_influence_plot import draw_attack_influence_overlay
 from visualization.critical_points_plot import MARKER_SPECS
 from visualization.gradient_plot import should_draw_vector
 from visualization.ridge_valley_plot import MIN_POINTS_TO_DRAW
@@ -26,6 +29,58 @@ def _midgame_board() -> chess.Board:
 
 def _entry_for(board: chess.Board) -> CacheEntry:
     return CacheEntry(state=CacheEntryState.READY, analysis=build_full_position_analysis(board))
+
+
+# ---------------------------------------------------------
+# Attack Influence
+# ---------------------------------------------------------
+
+
+def test_attack_influence_frame_colors_match_the_reference_plot_exactly():
+    """
+    Closes the one numeric-fidelity gap the desktop layout milestone's audit
+    found: every other layer in this file already has a dedicated
+    desktop/reference correspondence test; Attack Influence only had a
+    code-comment claim (attack_influence_layer.py's colorize_matrix
+    docstring) that it matches
+    visualization/attack_influence_plot.py::draw_attack_influence_overlay's
+    own imshow(matrix, cmap="RdBu_r", norm=Normalize(-m, m), alpha=0.72)
+    exactly.
+
+    This calls that reference function directly -- on a throwaway,
+    never-shown Figure, the same pattern build_equipotential_frame already
+    uses to reuse matplotlib's own contour tracing -- rather than
+    re-deriving its normalization formula by hand: `image.norm` and
+    `image.cmap` are the *actual* Normalize/Colormap instances the
+    reference itself constructed for this exact matrix, so applying them
+    back to the array is matplotlib's own documented way of recovering the
+    RGBA values imshow renders, not a reimplementation of anything.
+    `draw_attack_influence_overlay` only ever reads
+    `analysis.attack_influence_field.matrix` off its argument, which
+    FullPositionAnalysis provides exactly like the MoveAnalysis it is
+    type-hinted for.
+    """
+    entry = _entry_for(_midgame_board())
+
+    figure = Figure()
+    axes = figure.add_subplot()
+    image = draw_attack_influence_overlay(axes, entry.analysis)
+    reference_colors = image.cmap(image.norm(np.asarray(image.get_array()))).astype(np.float32)
+    # imshow's alpha= is applied at render time, not baked into cmap()'s own
+    # RGBA output -- image.get_alpha() reads back the actual alpha value the
+    # reference call used (not a re-typed literal, and deliberately not the
+    # desktop layer's own OVERLAY_ALPHA constant, which would only prove
+    # colorize_matrix agrees with itself, not with the reference).
+    reference_colors[..., 3] *= image.get_alpha()
+
+    frame = build_attack_influence_frame(entry)
+
+    np.testing.assert_allclose(frame.colors, reference_colors, atol=1e-6)
+    # assert_allclose above requires matching shapes, so this also proves
+    # frame.colors is index-aligned with the analysis matrix, not merely
+    # equal in aggregate -- the same "untouched coordinates" property the
+    # other layers' fidelity tests assert.
+    assert frame.colors.shape == np.array(entry.analysis.attack_influence_field.matrix).shape + (4,)
 
 
 # ---------------------------------------------------------
@@ -166,15 +221,26 @@ def test_critical_points_use_marker_specs_colors():
         assert marker.color[:3] == expected_rgb
 
 
-def test_critical_points_renderer_produces_a_quad_per_marker():
+def test_critical_points_renderer_produces_per_classification_glyph_geometry():
+    """
+    V3: maximum/minimum are filled triangles (GL_TRIANGLES, 3 vertices
+    each); saddle's X and degenerate's ring are outline-only
+    (GL_LINES) -- no longer a uniform quad-per-marker. See
+    tests/test_desktop_app_critical_point_glyphs.py for the full
+    per-classification geometry test coverage this milestone adds.
+    """
     entry = _entry_for(_midgame_board())
     frame = build_critical_points_frame(entry)
 
     geometries = render_critical_points_frame(frame)
 
-    assert len(geometries) == 1
-    assert geometries[0].primitive == GL.GL_TRIANGLES
-    assert geometries[0].positions.shape == (len(frame.markers) * 6, 2)
+    assert len(geometries) == 2
+    triangle_geometry, line_geometry = geometries
+    assert triangle_geometry.primitive == GL.GL_TRIANGLES
+    assert line_geometry.primitive == GL.GL_LINES
+
+    filled_count = sum(1 for m in frame.markers if m.classification in ("maximum", "minimum"))
+    assert triangle_geometry.positions.shape == (filled_count * 3, 2)
 
 
 # ---------------------------------------------------------

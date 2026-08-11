@@ -18,6 +18,7 @@ from visualization.morse_smale_plot import (
     ACCEPTED_CELL_FILL_ALPHA,
     ACCEPTED_CELL_FILL_COLOR,
     ACCEPTED_CELL_LINE_COLOR,
+    ACCEPTED_CELL_LINEWIDTH,
 )
 
 MIN_POINTS_TO_DRAW = 2  # matches visualization/morse_smale_plot.py's own constant
@@ -144,17 +145,23 @@ def render_morse_smale_frame(frame: MorseSmaleCellGeometryFrame) -> list[LayerGe
             primitive=GL.GL_TRIANGLES,
         )
 
+    # V2 (visual hierarchy): matches visualization/morse_smale_plot.py's own
+    # ACCEPTED_CELL_LINEWIDTH -- a clear topology boundary, deliberately not
+    # heavier than Ridge/Valley's RIDGE_VALLEY_LINEWIDTH (see
+    # ridge_valley_layer.py), matching the reference's own relative weights.
     if line_positions:
         line_geometry = LayerGeometry(
             positions=plot_to_ndc(np.array(line_positions, dtype=np.float32)),
             colors=np.array(line_vertex_colors, dtype=np.float32),
             primitive=GL.GL_LINES,
+            line_width=ACCEPTED_CELL_LINEWIDTH,
         )
     else:
         line_geometry = LayerGeometry(
             positions=np.zeros((0, 2), dtype=np.float32),
             colors=np.zeros((0, 4), dtype=np.float32),
             primitive=GL.GL_LINES,
+            line_width=ACCEPTED_CELL_LINEWIDTH,
         )
 
     return [fill_geometry, line_geometry]

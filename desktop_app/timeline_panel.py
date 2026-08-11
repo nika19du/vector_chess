@@ -245,6 +245,12 @@ class TimelinePanel(QWidget):
         self._rebuild_scheduled = False
 
         outer = QVBoxLayout(self)
+        # V5 (responsive layout): pure spacing/margin trim, same rationale
+        # as main_window.py's grid -- no change to the scrub strip/nav
+        # buttons/move-history scroll area themselves, only the default 9px
+        # margins and 6px inter-child spacing around them.
+        outer.setContentsMargins(4, 2, 4, 2)
+        outer.setSpacing(2)
 
         self._scrub_strip = _ScrubStrip(
             session_state,

@@ -4,14 +4,14 @@ import chess
 import chess.pgn
 import numpy as np
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QGridLayout, QLabel, QMainWindow, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QVBoxLayout, QWidget
 
 from audio.backend import AudioBackend, SoundDeviceBackend
 from audio.engine import AudioEngine
 from audio.voices import build_default_voice_registry
 from desktop_app.audio_controller import AudioController
 from desktop_app.audio_mixer_panel import AudioMixerPanel
-from desktop_app.board_panel import BoardPanel
+from desktop_app.board_panel import MIN_BOARD_PIXELS, BoardPanel
 from desktop_app.gl_canvas import MathCanvas
 from desktop_app.layer_panel import LayerPanel
 from desktop_app.layer_registry import LayerRegistry
@@ -156,7 +156,49 @@ class MainWindow(QMainWindow):
             self.layer_registry.register(layer)
 
         self.board_panel = BoardPanel(self.session_state, self)
+        # V7 (desktop workspace layout) finding: removing board_panel's old
+        # rowSpan (see workspace_row below) does let board_view's WIDTH grow
+        # past MIN_BOARD_PIXELS via ordinary QHBoxLayout cross-axis fill --
+        # but WIDTH (governed by workspace_row's column allocation) and
+        # HEIGHT (governed by BoardPanel's own internal vertical stretch,
+        # still pinned at MIN_BOARD_PIXELS -- see board_panel.py) are two
+        # independent layout computations with nothing coupling them.
+        # Letting both vary independently produced a measured, real
+        # non-square board (480x422 at 1366x768). heightForWidth was tried
+        # as the sanctioned Qt fix for exactly this and measured to have no
+        # effect (Qt's stretch redistribution grows an Expanding item toward
+        # its own fixed maximumSize using leftover space, bypassing
+        # heightForWidth entirely); a resizeEvent-driven coupling was ruled
+        # out by this milestone's explicit constraints against exactly that
+        # kind of hack. Capping WIDTH here at board_view's own instance
+        # (not touched in board_panel.py itself, to avoid affecting
+        # standalone/test construction elsewhere) at the same
+        # MIN_BOARD_PIXELS floor HEIGHT is already pinned to keeps the
+        # board square -- the same accepted, documented 400x400 limitation
+        # as before this milestone, just relocated here from the old
+        # rowSpan bug rather than newly introduced by it.
+        self.board_panel.board_view.setMaximumWidth(MIN_BOARD_PIXELS)
         self.canvas = MathCanvas(self)
+        # V6a (canvas-collapse fix), retained under V7's workspace_row: the
+        # canvas sits alongside board_panel as a sibling in the same
+        # QHBoxLayout row and must never be structurally shorter than it --
+        # reuses board_panel's own MIN_BOARD_PIXELS floor rather than
+        # inventing a new number. This closes a measured real-rendering bug
+        # (V6 audit): the row's Expanding-policy children only get what's
+        # left over after LayerPanel/TimelinePanel/AudioMixerPanel claim
+        # their own natural sizeHint, and that sizeHint scales directly with
+        # active font metrics -- under the test suite's offscreen QPA
+        # platform this leftover was always comfortable, but under real
+        # on-screen Windows rendering (Segoe UI rows ~41% taller than
+        # offscreen's fallback font) the canvas collapsed to as little as
+        # 55px tall at 1280x720/1366x768. setMinimumHeight is a hard floor
+        # regardless of which layout class distributes the row's height --
+        # verified empirically on both the offscreen and real "windows" QPA
+        # platforms at every supported target resolution -- see
+        # docs/interactive_ui.md's responsive layout section and
+        # tests/test_desktop_app_responsive_layout.py's real-rendering
+        # coverage.
+        self.canvas.setMinimumHeight(MIN_BOARD_PIXELS)
         # Attack Influence is included here too -- see the class docstring:
         # it never actually populates `_layer_gpu_buffers` under this
         # mechanism (its renderer output goes through `set_overlay_colors`
@@ -196,36 +238,67 @@ class MainWindow(QMainWindow):
         self.audio_mixer_panel = AudioMixerPanel(self.audio_controller, self.audio_engine, self.voice_registry, self)
 
         central = QWidget(self)
-        layout = QGridLayout(central)
-        # Requested layout: board spans both rows on the left; the canvas is
-        # the top-right "protagonist" panel (Part 1); the layer strip sits
-        # below it, right column only -- matching the frozen mockup's panel
-        # roles (board = input, canvas = biggest panel, layer strip = its
-        # own controls beneath it), not a redesign of Part 2's fuller
-        # top-bar/inspector layout, which remains out of this milestone's
-        # scope. The timeline panel is the one piece of Part 2's bottom
-        # transport strip built so far (Phase 5e) -- it spans both columns,
-        # beneath the board and canvas/layer-strip columns alike.
+        # V7 (desktop workspace layout): a QVBoxLayout of bands (header /
+        # primary workspace row / timeline / audio mixer) replaces the old
+        # single QGridLayout. The prior grid's only real job -- board_panel
+        # spanning two rows so LayerPanel could sit beneath the canvas --
+        # is gone: LayerPanel now sits beside board_panel/canvas as a third
+        # column in one row (workspace_row below), so nothing needs to span
+        # rows at all. This structurally resolves the rowSpan/column-stretch
+        # limitation the old grid had (see git history for the removed
+        # "MEASURED LIMITATION" comment): QHBoxLayout distributes width to
+        # ordinary, non-spanning siblings purely via stretch factor and size
+        # policy, the code path that was never broken -- no resizeEvent
+        # hook, no setColumnMinimumWidth two-pass trick, no manual geometry
+        # mutation.
+        root_layout = QVBoxLayout(central)
+        # V5 (responsive layout): pure spacing/margin trim -- measured (the
+        # real remaining blocker at 1280x720/1366x768 after V4) that Qt's
+        # style defaults here (9px margins on all sides, 6px between every
+        # row) cost ~42px of MainWindow's true minimum height for zero
+        # visual content, stacked on top of the same trim already applied
+        # inside TimelinePanel/BoardPanel/LayerPanel below. No widget's
+        # size or content changes, only the empty space around them.
+        root_layout.setContentsMargins(6, 4, 6, 4)
+        root_layout.setSpacing(3)
+
         header = QLabel("VectorChess")
         header.setStyleSheet("font-weight: bold; font-size: 16px; padding: 4px;")
-        layout.addWidget(header, 0, 0, 1, 2)
-        layout.addWidget(self.board_panel, 1, 0, 2, 1)
-        layout.addWidget(self.canvas, 1, 1)
-        layout.addWidget(self.layer_panel, 2, 1)
-        layout.addWidget(self.timeline_panel, 3, 0, 1, 2)
-        # Phase 5f.5: a new row beneath the timeline, spanning both
-        # columns -- purely additive, no change to any existing widget's
-        # row/column/span above. Visually secondary and compact (fixed
-        # row stretch, like the timeline row above it), not a layout
-        # redesign.
-        layout.addWidget(self.audio_mixer_panel, 4, 0, 1, 2)
-        layout.setColumnStretch(0, 0)
-        layout.setColumnStretch(1, 1)
-        layout.setRowStretch(1, 3)
-        layout.setRowStretch(2, 1)
-        layout.setRowStretch(3, 0)
-        layout.setRowStretch(4, 0)
-        central.setLayout(layout)
+        root_layout.addWidget(header)
+
+        # V7: board (input), canvas (the biggest, "protagonist" panel), and
+        # the layer inspector are co-located as three ordinary siblings in
+        # one row -- board and canvas are both square-content-capped by the
+        # row's available height, so stretch beyond that cap mostly benefits
+        # the inspector; 5:5:3 keeps the majority share (10 of 13 units) on
+        # the co-primary board+canvas pair while still giving the inspector
+        # real, intentional width instead of leftover canvas column space
+        # sitting unused as dead letterbox background (measured ~50% of the
+        # canvas widget's own area under the old 1:4 column-stretch ratio --
+        # compute_square_viewport's letterboxing behavior itself is
+        # unchanged/frozen; this only changes how much width the canvas's
+        # *container* is handed in the first place). Not a pinned contract --
+        # a tuned starting point, verified against MIN_BOARD_PIXELS at the
+        # tightest target resolution.
+        workspace_row = QHBoxLayout()
+        workspace_row.setSpacing(3)
+        workspace_row.addWidget(self.board_panel, 5)
+        workspace_row.addWidget(self.canvas, 5)
+        workspace_row.addWidget(self.layer_panel, 3)
+        root_layout.addLayout(workspace_row, 1)
+
+        # The timeline spans the full window width, not just workspace_row's
+        # width: its scrub strip represents the whole active game path's
+        # time axis, a genuinely global, full-width-meaningful piece of UI --
+        # unlike the move-history buttons beside it, which merely don't fill
+        # their container (TimelinePanel's own addStretch(1) after them is
+        # the correct, already-existing fix for that).
+        root_layout.addWidget(self.timeline_panel)
+        # Phase 5f.5: a compact band beneath the timeline, spanning the full
+        # window width -- visually secondary/tertiary and compact, same role
+        # as the timeline row above it, not a layout redesign.
+        root_layout.addWidget(self.audio_mixer_panel)
+
         self.setCentralWidget(central)
 
         self.position_cache.position_ready.connect(self._on_position_ready)

@@ -73,12 +73,18 @@ def test_registering_a_seventh_layer_requires_no_change_to_layer_panel(qapp):
 def test_rows_are_built_in_deterministic_registration_order(qapp):
     panel, _ = _panel(qapp)
 
-    layout = panel.layout()
-    # Row 0 is the "Layers" title; the six layer rows follow in registration
-    # order; the legend group box is last.
+    # V7: the title (item 0), preset row (item 1), and six layer rows
+    # (items 2..7) all live directly in panel.layout() now -- never inside
+    # a QScrollArea -- so they're structurally guaranteed visible rather
+    # than bounded by a fixed-height scroll budget (see layer_panel.py's
+    # LEGEND_SCROLL_MIN_HEIGHT_PX, which V7 narrowed to cover only the
+    # legend). The content itself, and the property under test
+    # (registration-order rows), is unchanged; only the traversal path
+    # moved.
+    content_layout = panel.layout()
     row_labels = []
-    for index in range(1, 1 + len(ALL_SIX_LAYERS)):
-        row_layout = layout.itemAt(index).layout()
+    for index in range(2, 2 + len(ALL_SIX_LAYERS)):
+        row_layout = content_layout.itemAt(index).layout()
         checkbox = row_layout.itemAt(0).widget()
         row_labels.append(checkbox.text())
 
@@ -178,9 +184,12 @@ def test_external_session_state_opacity_change_updates_the_slider(qapp):
 def test_panel_includes_a_legend(qapp):
     panel, _ = _panel(qapp)
 
-    layout = panel.layout()
-    legend_index = layout.count() - 2  # last item before the trailing stretch
-    legend = layout.itemAt(legend_index).widget()
+    # V7: the legend is the last item in panel.layout(), inside its own
+    # QScrollArea (see test_rows_are_built_in_deterministic_registration_order
+    # -- everything before it, the title/preset row/six layer rows, is now
+    # unscrolled).
+    legend_scroll_area = panel.layout().itemAt(panel.layout().count() - 1).widget()
+    legend = legend_scroll_area.widget()
 
     assert legend is not None
     assert legend.title() == "Legend"

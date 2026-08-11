@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QScrollArea,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -19,6 +20,18 @@ MASTER_GAIN_SLIDER_MIN = 0
 MASTER_GAIN_SLIDER_MAX = 100
 
 UNAVAILABLE_STATUS_TEXT = "Live Audio unavailable (no audio device)"
+
+# V7 (desktop workspace layout): the voice grid's QScrollArea (see
+# __init__) is now sized from the grid's own real sizeHint -- header row +
+# one row per registered voice, measured after the actual widgets are built,
+# under whatever font metrics are really active -- rather than a hardcoded
+# pixel constant. The V6a-era constant this replaced (40px) could not fit
+# even one full row, let alone a header plus 5-6 voice rows, under any font
+# metrics, offscreen or real; that mismatch was the direct, confirmed cause
+# of a live screenshot showing every voice row cut off below the visible
+# window. This margin is only slack added on top of the measured sizeHint
+# (border/rounding headroom), not the primary sizing mechanism.
+VOICE_GRID_SCROLL_MARGIN_PX = 8
 
 
 class AudioMixerPanel(QWidget):
@@ -80,6 +93,9 @@ class AudioMixerPanel(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
+        # V5 (responsive layout): pure spacing trim between title/status/
+        # master-row/grid -- no change to any control itself.
+        layout.setSpacing(2)
 
         title = QLabel("Live Audio")
         title.setStyleSheet("font-weight: bold; font-size: 13px;")
@@ -106,7 +122,39 @@ class AudioMixerPanel(QWidget):
         top_row.addWidget(self._master_slider, stretch=1)
         layout.addLayout(top_row)
 
-        grid = QGridLayout()
+        # V6a (canvas-collapse fix), retained under V7 with a corrected
+        # height source: the voice grid lives inside a fixed-height scroll
+        # area instead of directly in this widget's own layout, so this
+        # widget's own height stays compact/bounded (this panel is a
+        # tertiary strip, not meant to grow with window size) regardless of
+        # how many voices are registered, while every row stays reachable
+        # by scrolling if it ever doesn't fit. The fixed height itself is
+        # set below, from the grid's real content, after all voice rows are
+        # built.
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        grid_content = QWidget()
+        grid = QGridLayout(grid_content)
+        # V7 (desktop workspace layout): trims Qt's default ~6px inter-row
+        # spacing down to 1px -- pure spacing, zero content change, same
+        # category of fix as V5's margin trims elsewhere. Now that this
+        # grid's height is measured from real content (VOICE_GRID_SCROLL_
+        # MARGIN_PX, see above) rather than clipped by a too-small fixed
+        # constant, its 6 rows (header + 5 voices) at default Qt spacing
+        # were the single largest contributor to a measured 26px overflow
+        # of MainWindow's true minimum height at 1280x720.
+        grid.setVerticalSpacing(0)
+        # V0 layout fix: with no column ever given a nonzero stretch, Qt's
+        # default is to split any leftover width evenly across all 3
+        # columns (name/Mute/Solo) -- since this panel spans the full
+        # window width, that scattered Mute/Solo far apart from their voice
+        # row on a wide window. Giving only the name column stretch keeps
+        # Mute/Solo pinned at their natural checkbox width, right next to
+        # the row they belong to.
+        grid.setColumnStretch(0, 1)
         grid.addWidget(QLabel(""), 0, 0)
         mute_header = QLabel("Mute")
         mute_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -118,7 +166,12 @@ class AudioMixerPanel(QWidget):
         for row_index, voice in enumerate(voice_registry, start=1):
             self._build_voice_row(grid, row_index, voice.voice_id, voice.label, voice.active)
 
-        layout.addLayout(grid)
+        # Sized from the grid's own real sizeHint (header row + every
+        # registered voice row, all now actually built) instead of a
+        # hardcoded constant -- see VOICE_GRID_SCROLL_MARGIN_PX's comment.
+        scroll_area.setFixedHeight(grid.sizeHint().height() + VOICE_GRID_SCROLL_MARGIN_PX)
+        scroll_area.setWidget(grid_content)
+        layout.addWidget(scroll_area)
 
         if not audio_engine.is_available:
             self._mark_unavailable()

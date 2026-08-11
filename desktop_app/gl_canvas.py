@@ -6,10 +6,19 @@ import numpy as np
 from OpenGL import GL
 from OpenGL.GL import shaders as gl_shaders
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from PySide6.QtWidgets import QSizePolicy
 
 GRID_SIZE = 8
 VERTICES_PER_QUAD = 6
 VERTEX_COUNT = GRID_SIZE * GRID_SIZE * VERTICES_PER_QUAD
+
+# V2 (visual hierarchy): the real floor of glLineWidth on essentially every
+# OpenGL implementation, core profile or not (GL_ALIASED_LINE_WIDTH_RANGE's
+# minimum is always >= 1.0 by spec) -- a reference linewidth below this
+# (Equipotential's 0.7) cannot be rendered thinner than this regardless of
+# GPU/driver, so layers clamp to it rather than asking for an unreachable
+# value.
+MIN_GL_LINE_WIDTH = 1.0
 
 # Part 9's neutral slate board colors (docs/interactive_ui.md) -- deliberately
 # not the wood tones visualization/board_plot.py uses for its static plots.
@@ -71,6 +80,29 @@ def build_grid_positions() -> np.ndarray:
     return positions
 
 
+def compute_square_viewport(widget_width: int, widget_height: int) -> tuple[int, int, int, int]:
+    """
+    Largest centered square GL viewport (x, y, w, h) that fits inside a
+    widget_width x widget_height rect -- glViewport's own (x, y, w, h)
+    convention, origin at the bottom-left.
+
+    All board/layer geometry is authored once in a fixed -1..1 NDC square
+    (build_grid_positions); mapping that square onto a non-square viewport
+    stretches it unevenly on one axis. Letterboxing into the largest centered
+    square here keeps the rendered mathematical domain square regardless of
+    what rectangle the surrounding Qt layout hands this widget -- the widget
+    itself does not need to be square.
+    """
+    width = max(int(widget_width), 0)
+    height = max(int(widget_height), 0)
+    side = min(width, height)
+    if side <= 0:
+        return (0, 0, 0, 0)
+    x = (width - side) // 2
+    y = (height - side) // 2
+    return (x, y, side, side)
+
+
 def build_checkerboard_colors() -> np.ndarray:
     """Static board-square chrome -- always on, underneath any layer overlay."""
     colors = np.empty((VERTEX_COUNT, 4), dtype=np.float32)
@@ -106,6 +138,11 @@ class LayerGeometry:
     positions: np.ndarray  # (N, 2) float32, NDC space
     colors: np.ndarray  # (N, 4) float32
     primitive: int  # GL.GL_POINTS | GL.GL_LINES | GL.GL_TRIANGLES
+    # V2 (visual hierarchy): only meaningful for GL_LINES -- the draw loop
+    # below applies it via glLineWidth immediately before this geometry's
+    # draw call. Ignored for GL_TRIANGLES/GL_POINTS geometries (default 1.0
+    # is harmless there, never applied).
+    line_width: float = 1.0
 
 
 class MathCanvas(QOpenGLWidget):
@@ -125,6 +162,22 @@ class MathCanvas(QOpenGLWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        # V0 layout fix: this is one of the app's two primary panels
+        # (docs/interactive_ui.md Part 2) -- Expanding signals it should
+        # absorb leftover grid space rather than sit at whatever an
+        # unspecified default sizeHint would imply.
+        #
+        # Deliberately no explicit minimumSize/minimumSizeHint here: measured
+        # (tests/test_desktop_app_layout_regression.py) that MainWindow's own
+        # layout already floors this widget at a comfortable size (>=180px
+        # per side even in a pathologically shrunk window) purely as a side
+        # effect of BoardPanel's fixed inner board view + LayerPanel's own
+        # minimum -- both of which MainWindow's QGridLayout must satisfy
+        # regardless. Adding a redundant minimum here would only raise
+        # MainWindow's true minimum window size further, which is the
+        # opposite of what's needed at 1280x720.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._viewport: tuple[int, int, int, int] = (0, 0, 0, 0)
         self._program = None
         self._vao = None
         self._position_vbo = None
@@ -147,8 +200,8 @@ class MathCanvas(QOpenGLWidget):
         self._layer_geometries: dict[str, list[LayerGeometry]] = {}
         self._layer_enabled: dict[str, bool] = {}
         self._layer_opacity: dict[str, float] = {}
-        self._layer_gpu_buffers: dict[str, list[tuple[int, int, int, int]]] = {}
-        # Each tuple: (position_vbo, color_vbo, vertex_count, primitive).
+        self._layer_gpu_buffers: dict[str, list[tuple[int, int, int, int, float]]] = {}
+        # Each tuple: (position_vbo, color_vbo, vertex_count, primitive, line_width).
 
     def set_overlay_colors(self, colors: np.ndarray) -> None:
         """`colors` must be shaped (VERTEX_COUNT, 4), matching `build_grid_positions`'s vertex order."""
@@ -252,9 +305,38 @@ class MathCanvas(QOpenGLWidget):
             self._upload_layer_geometry(layer_id)
 
     def resizeGL(self, width: int, height: int) -> None:
-        GL.glViewport(0, 0, max(width, 1), max(height, 1))
+        # V5 (responsive layout / DPI audit): intentionally NOT calling
+        # glViewport here anymore -- measured directly (instrumenting this
+        # method and reading GL_VIEWPORT's real live state back) that Qt
+        # resets the viewport to the widget's full device-pixel rect
+        # itself before every paintGL() call regardless of what resizeGL
+        # sets, so a glViewport() call made here was silently overwritten
+        # every time. Invisible at devicePixelRatio 1.0 (Qt's own reset and
+        # a full-rect viewport coincide there whenever the widget happens
+        # to be square already) but produces a badly distorted, tiled-
+        # looking render under any HiDPI scaling once letterboxing needs a
+        # real offset -- reproduced with an isolated MathCanvas at
+        # devicePixelRatio 1.25, unrelated to MainWindow or any resize
+        # sequencing. The actual, respected glViewport call now lives in
+        # paintGL below, set fresh on every single frame instead of once
+        # per resize -- also fixes the *other* half of this bug:
+        # `width`/`height` here turned out to be LOGICAL pixels (verified
+        # equal to self.width()/self.height()), not device pixels, so
+        # compute_square_viewport needs self.devicePixelRatio() applied
+        # explicitly to get the real framebuffer size glViewport actually
+        # operates in -- also done in paintGL now, not here.
+        pass
 
     def paintGL(self) -> None:
+        # See resizeGL's comment: recomputed and re-applied every frame,
+        # from true device-pixel dimensions, since Qt does not let a
+        # resizeGL-time glViewport call persist and self.width()/height()
+        # alone are logical, not device, pixels.
+        device_width = round(self.width() * self.devicePixelRatio())
+        device_height = round(self.height() * self.devicePixelRatio())
+        self._viewport = compute_square_viewport(device_width, device_height)
+        GL.glViewport(*self._viewport)
+
         GL.glClear(GL.GL_COLOR_BUFFER_BIT)
         GL.glUseProgram(self._program)
         GL.glBindVertexArray(self._vao)
@@ -291,11 +373,18 @@ class MathCanvas(QOpenGLWidget):
             if not self._layer_enabled.get(layer_id, True):
                 continue
             GL.glUniform1f(self._opacity_uniform_location, self._layer_opacity.get(layer_id, 1.0))
-            for position_vbo, color_vbo, vertex_count, primitive in self._layer_gpu_buffers.get(layer_id, []):
+            for position_vbo, color_vbo, vertex_count, primitive, line_width in self._layer_gpu_buffers.get(
+                layer_id, []
+            ):
                 GL.glBindBuffer(GL.GL_ARRAY_BUFFER, position_vbo)
                 GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
                 GL.glBindBuffer(GL.GL_ARRAY_BUFFER, color_vbo)
                 GL.glVertexAttribPointer(1, 4, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+                # V2: line_width only has an effect on GL_LINES -- gated so
+                # triangle-primitive layers (critical points, Morse-Smale
+                # fill) never issue a meaningless glLineWidth call.
+                if primitive == GL.GL_LINES:
+                    GL.glLineWidth(line_width)
                 GL.glDrawArrays(primitive, 0, vertex_count)
 
         GL.glBindVertexArray(0)
@@ -307,11 +396,13 @@ class MathCanvas(QOpenGLWidget):
         GL.glBufferData(GL.GL_ARRAY_BUFFER, self._overlay_colors.nbytes, self._overlay_colors, GL.GL_DYNAMIC_DRAW)
 
     def _upload_layer_geometry(self, layer_id: str) -> None:
-        for position_vbo, color_vbo, _vertex_count, _primitive in self._layer_gpu_buffers.get(layer_id, []):
+        for position_vbo, color_vbo, _vertex_count, _primitive, _line_width in self._layer_gpu_buffers.get(
+            layer_id, []
+        ):
             GL.glDeleteBuffers(1, [position_vbo])
             GL.glDeleteBuffers(1, [color_vbo])
 
-        new_buffers: list[tuple[int, int, int, int]] = []
+        new_buffers: list[tuple[int, int, int, int, float]] = []
         for geometry in self._layer_geometries.get(layer_id, []):
             positions = np.asarray(geometry.positions, dtype=np.float32)
             colors = np.asarray(geometry.colors, dtype=np.float32)
@@ -327,7 +418,7 @@ class MathCanvas(QOpenGLWidget):
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, color_vbo)
             GL.glBufferData(GL.GL_ARRAY_BUFFER, colors.nbytes, colors, GL.GL_DYNAMIC_DRAW)
 
-            new_buffers.append((position_vbo, color_vbo, vertex_count, geometry.primitive))
+            new_buffers.append((position_vbo, color_vbo, vertex_count, geometry.primitive, geometry.line_width))
 
         self._layer_gpu_buffers[layer_id] = new_buffers
 

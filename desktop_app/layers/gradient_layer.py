@@ -22,6 +22,21 @@ from visualization.gradient_plot import (
 # named module constant (it's an inline literal there) -- kept as one, here.
 _MAX_ARROW_LENGTH_CAP = 0.58
 
+# V2 (visual hierarchy): draw_single_gradient_vector's own arrow linewidth is
+# `1.2 + relative_strength * 2.2` (also an inline literal, not an exported
+# constant) -- genuinely per-vector/context-dependent, unlike every other
+# line-based layer's constant reference width. Reproducing that per-vector
+# variation would need either multiple draw calls bucketed by width or
+# geometry-based line rendering, both a materially larger change than "carry
+# one width per LayerGeometry" (see gl_canvas.py's line_width field this
+# milestone adds). Using the formula's own floor (relative_strength -> 0)
+# keeps every arrow at the "light / directional support" end of the
+# reference's real range rather than inventing an unrelated number -- the
+# per-arrow strength gradation itself is still fully preserved through alpha
+# (see `alpha` below), just not through width. Documented as a known,
+# reported limitation, not a silent approximation.
+_GRADIENT_LINEWIDTH_BASE = 1.2
+
 
 @dataclass(frozen=True)
 class GradientSegment:
@@ -110,7 +125,9 @@ def render_gradient_frame(frame: GradientFrame) -> list[LayerGeometry]:
             dtype=np.float32,
         )
 
-    return [LayerGeometry(positions=positions, colors=colors, primitive=GL.GL_LINES)]
+    return [
+        LayerGeometry(positions=positions, colors=colors, primitive=GL.GL_LINES, line_width=_GRADIENT_LINEWIDTH_BASE)
+    ]
 
 
 GRADIENT_LAYER = LayerDefinition(
