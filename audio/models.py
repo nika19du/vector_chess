@@ -33,6 +33,15 @@ class AudioMapping:
     dynamics_label: str | None  # None only on the first move
     loudness: float  # dynamics_label -> master gain, 0..1
 
+    # Audio Layer 2 -- Rhythmic Layer (see audio/pulse_pattern.py):
+    # dynamics_intensity -> pulse_density, 0..1, the Pulse voice's one
+    # signal. pulse_period_seconds is a fixed constant for this MVP
+    # (never derived from chess data) -- carried explicitly rather than
+    # hardcoded in the engine so a future milestone can vary it without
+    # another dataclass migration.
+    pulse_density: float
+    pulse_period_seconds: float
+
 
 @dataclass(frozen=True)
 class AudioClip:

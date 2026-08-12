@@ -31,7 +31,11 @@ UNAVAILABLE_STATUS_TEXT = "Live Audio unavailable (no audio device)"
 # of a live screenshot showing every voice row cut off below the visible
 # window. This margin is only slack added on top of the measured sizeHint
 # (border/rounding headroom), not the primary sizing mechanism.
-VOICE_GRID_SCROLL_MARGIN_PX = 8
+# Audio Layer 2 -- Rhythmic Layer: trimmed 8->1px (still real slack, not
+# zero) to help reclaim the vertical budget the new 6th (Pulse) voice
+# row needs -- see __init__'s contents-margin comment for the sibling
+# trim this pairs with.
+VOICE_GRID_SCROLL_MARGIN_PX = 1
 
 
 class AudioMixerPanel(QWidget):
@@ -92,7 +96,12 @@ class AudioMixerPanel(QWidget):
         self._solo_checkboxes: dict[str, QCheckBox] = {}
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
+        # Audio Layer 2 -- Rhythmic Layer (Pulse voice row): top/bottom
+        # margin trimmed 4->2px, same category of pure-slack trim as V5's
+        # spacing.setSpacing(2) below -- reclaims the vertical budget the
+        # new 6th voice row needs to keep MainWindow's V5 "never exceeds
+        # the requested window size" invariant intact, zero content change.
+        layout.setContentsMargins(6, 2, 6, 2)
         # V5 (responsive layout): pure spacing trim between title/status/
         # master-row/grid -- no change to any control itself.
         layout.setSpacing(2)

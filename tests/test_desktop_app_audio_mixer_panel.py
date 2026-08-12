@@ -32,23 +32,24 @@ def _wired_panel(qapp, *, fail_on_open: bool = False):
 
 
 # ---------------------------------------------------------
-# Construction / rows -- registry-driven, exactly five voices
+# Construction / rows -- registry-driven, exactly six voices
+# (Audio Layer 2 -- Rhythmic Layer added Pulse as a fourth active voice)
 # ---------------------------------------------------------
 
 
-def test_panel_has_exactly_five_voice_rows(qapp):
+def test_panel_has_exactly_six_voice_rows(qapp):
     panel, *_ = _wired_panel(qapp)
 
-    assert set(panel._mute_checkboxes) == {"harmony", "melody", "accent", "drone", "space"}
-    assert set(panel._solo_checkboxes) == {"harmony", "melody", "accent", "drone", "space"}
-    assert len(panel._mute_checkboxes) == 5
-    assert len(panel._solo_checkboxes) == 5
+    assert set(panel._mute_checkboxes) == {"harmony", "melody", "accent", "pulse", "drone", "space"}
+    assert set(panel._solo_checkboxes) == {"harmony", "melody", "accent", "pulse", "drone", "space"}
+    assert len(panel._mute_checkboxes) == 6
+    assert len(panel._solo_checkboxes) == 6
 
 
-def test_melody_harmony_accent_controls_are_enabled(qapp):
+def test_melody_harmony_accent_pulse_controls_are_enabled(qapp):
     panel, *_ = _wired_panel(qapp)
 
-    for voice_id in ("melody", "harmony", "accent"):
+    for voice_id in ("melody", "harmony", "accent", "pulse"):
         assert panel._mute_checkboxes[voice_id].isEnabled() is True
         assert panel._solo_checkboxes[voice_id].isEnabled() is True
 
@@ -246,7 +247,7 @@ def test_unavailable_backend_disables_all_controls_at_construction(qapp, qtbot):
     assert panel._enabled_checkbox.isEnabled() is False
     assert panel._enabled_checkbox.isChecked() is False
     assert panel._master_slider.isEnabled() is False
-    for voice_id in ("melody", "harmony", "accent"):
+    for voice_id in ("melody", "harmony", "accent", "pulse"):
         assert panel._mute_checkboxes[voice_id].isEnabled() is False
         assert panel._solo_checkboxes[voice_id].isEnabled() is False
     assert panel._status_label.text() == UNAVAILABLE_STATUS_TEXT

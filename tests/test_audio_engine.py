@@ -43,11 +43,7 @@ def _running_engine(
     blocksize: int = 64,
     smoothing_coefficient: float = 1.0,
     melody_attack_seconds: float = 1e-6,
-    melody_plateau_seconds: float = 10.0,
-    melody_decay_seconds: float = 10.0,
     harmony_attack_seconds: float = 1e-6,
-    harmony_plateau_seconds: float = 10.0,
-    harmony_decay_seconds: float = 10.0,
 ):
     """
     smoothing_coefficient=1.0 makes the very first block after a
@@ -56,15 +52,19 @@ def _running_engine(
     exact and deterministic instead of entangled with the smoothing
     ramp.
 
-    Phase 5f.4a: committed/idle mode (the default -- scrub_active is
-    False unless a test calls set_scrub_active(True)) drives Melody/
-    Harmony through the articulation envelope instead. The near-instant
-    attack and long plateau/decay defaults here put a triggered voice at
-    (approximately) full peak amplitude for many blocks, mirroring the
-    old "instant smoothing" trick so most tests can assert exact,
-    steady-state output without rendering through a real attack/decay
-    shape. Tests that specifically exercise attack/decay/silence timing
-    override these explicitly.
+    B3a: committed/idle mode (the default -- scrub_active is False
+    unless a test calls set_scrub_active(True)) drives Melody/Harmony
+    through `_ModalVoice`'s per-mode decay instead -- there is no
+    independently-configurable plateau/decay duration anymore (decay
+    time is whatever the accepted B2 mode dampings say it is; see
+    audio/engine.py's module docstring). The near-instant attack default
+    here still gives a triggered voice its full weight budget within the
+    first block; at this file's small blocksize (a few ms of audio) the
+    dominant mode's own decay is negligible over that span, so most
+    tests can still assert exact/proportional single-block output
+    without needing to model the real decay curve. Tests that
+    specifically exercise decay/silence timing render many blocks
+    instead (see tests/test_audio_articulation.py).
     """
 
     backend = FakeAudioBackend()
@@ -75,11 +75,7 @@ def _running_engine(
         blocksize=blocksize,
         smoothing_coefficient=smoothing_coefficient,
         melody_attack_seconds=melody_attack_seconds,
-        melody_plateau_seconds=melody_plateau_seconds,
-        melody_decay_seconds=melody_decay_seconds,
         harmony_attack_seconds=harmony_attack_seconds,
-        harmony_plateau_seconds=harmony_plateau_seconds,
-        harmony_decay_seconds=harmony_decay_seconds,
     )
     assert engine.start() is True
     stream = backend.streams[-1]
@@ -186,12 +182,14 @@ def test_publish_only_the_latest_state_is_ever_read():
 
     engine.publish(_state(pitch_hz=220.0, loudness=0.3))
     engine.publish(_state(pitch_hz=880.0, loudness=0.3))  # overwrites, never queued
+    engine.push_note_trigger()
 
-    block = stream.render_block(64)
+    stream.render_block(64)
 
-    # With instant smoothing, the melody oscillator's target frequency
-    # is whatever was published last -- 880Hz, never 220Hz.
-    assert engine._melody_osc.smoothed_frequency.value == pytest.approx(880.0)
+    # publish() replaces a single slot rather than queuing -- the note
+    # that actually gets triggered reflects whatever was published last
+    # (880Hz), never the earlier, overwritten 220Hz.
+    assert engine._melody_voice.primary.frequencies_hz[0] == pytest.approx(880.0)
 
 
 # ---------------------------------------------------------
@@ -287,37 +285,38 @@ def test_muting_every_voice_produces_silence():
     assert np.all(fully_muted_block == 0.0)
 
 
-def test_muted_voice_phase_continues_advancing_across_blocks():
+def test_muted_voice_note_state_continues_advancing_across_blocks():
     engine, backend, stream = _running_engine()
 
     engine.publish(_state(pitch_hz=440.0, loudness=0.3))
+    engine.push_note_trigger()
     stream.render_block(64)
-    phase_before_mute = engine._melody_osc.phase
+    elapsed_before_mute = engine._melody_voice.primary.elapsed_seconds
 
     engine.publish(_state(pitch_hz=440.0, loudness=0.3, voice_mute={"melody": True}))
     stream.render_block(64)
-    phase_after_first_muted_block = engine._melody_osc.phase
+    elapsed_after_first_muted_block = engine._melody_voice.primary.elapsed_seconds
     stream.render_block(64)
-    phase_after_second_muted_block = engine._melody_osc.phase
+    elapsed_after_second_muted_block = engine._melody_voice.primary.elapsed_seconds
 
-    assert phase_after_first_muted_block != pytest.approx(phase_before_mute)
-    assert phase_after_second_muted_block != pytest.approx(phase_after_first_muted_block)
+    assert elapsed_after_first_muted_block > elapsed_before_mute
+    assert elapsed_after_second_muted_block > elapsed_after_first_muted_block
 
 
-def test_unmuting_produces_audible_output_again_without_resetting_phase():
+def test_unmuting_produces_audible_output_again_without_resetting_note_state():
     engine, backend, stream = _running_engine()
 
     engine.publish(_state(pitch_hz=440.0, loudness=0.3, voice_mute={"melody": True}))
     engine.push_note_trigger()
     stream.render_block(64)
-    phase_while_muted = engine._melody_osc.phase
+    elapsed_while_muted = engine._melody_voice.primary.elapsed_seconds
 
     engine.publish(_state(pitch_hz=440.0, loudness=0.3))  # unmuted again
     block = stream.render_block(64)
 
     assert np.abs(block).max() > 0.0
-    # phase kept advancing from where it was while muted, not reset to 0
-    assert engine._melody_osc.phase != pytest.approx(phase_while_muted)
+    # note state kept advancing from where it was while muted, not reset
+    assert engine._melody_voice.primary.elapsed_seconds > elapsed_while_muted
 
 
 # ---------------------------------------------------------

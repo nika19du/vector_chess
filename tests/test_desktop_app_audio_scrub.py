@@ -211,7 +211,32 @@ def test_pitch_timbre_loudness_stay_constant_across_the_whole_segment(qapp):
 
     assert all(s.pitch_hz == published[0].pitch_hz for s in published)
     assert all(s.harmonic_richness == published[0].harmonic_richness for s in published)
+    assert all(s.color == published[0].color for s in published)  # B3: modal voice selection
     assert all(s.loudness == published[0].loudness for s in published)
+
+
+def test_pulse_density_and_period_stay_constant_across_the_whole_segment(qapp):
+    """
+    pulse_density/pulse_period_seconds are move/segment-identity-derived
+    (like loudness), not continuously interpolated -- a move has no
+    meaningful "halfway" rhythmic density any more than it has a halfway
+    pitch. Held fixed at the segment's own upper-node values for the
+    whole scrub, exactly like pitch/richness/loudness above.
+    """
+
+    session_state, controller, engine = _controller(qapp)
+    _play(session_state, ["e2e4", "d7d5", "e4d5"])  # a capture -- nonzero pulse_density
+
+    path = session_state.active_path()
+    controller.begin_scrub(path)
+
+    published = []
+    for t in (0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0):
+        controller.update_scrub(ScrubPosition(path_index=2, t=t))
+        published.append(engine.published[-1])
+
+    assert all(s.pulse_density == published[0].pulse_density for s in published)
+    assert all(s.pulse_period_seconds == published[0].pulse_period_seconds for s in published)
 
 
 def test_crossing_a_segment_boundary_updates_discrete_identity(qapp):
@@ -228,6 +253,7 @@ def test_crossing_a_segment_boundary_updates_discrete_identity(qapp):
 
     assert in_first_segment.pitch_hz != in_second_segment.pitch_hz
     assert in_first_segment.harmonic_richness != in_second_segment.harmonic_richness  # white vs black
+    assert in_first_segment.color != in_second_segment.color  # B3: white vs black modal voice
     assert in_first_segment.segment_key != in_second_segment.segment_key
 
 

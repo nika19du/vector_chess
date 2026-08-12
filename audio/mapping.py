@@ -1,6 +1,7 @@
 import math
 
 from audio.models import AudioMapping
+from audio.pulse_pattern import PULSE_PERIOD_SECONDS, pulse_density_for_intensity
 from chess_engine.models import DynamicsAnalysis, MoveAnalysis
 
 # --- Signal 1: color -> timbre ------------------------------------
@@ -253,6 +254,23 @@ def _loudness_for_dynamics_label(label: str | None) -> float:
     return LOUDNESS_BY_LABEL.get(label, NEUTRAL_LOUDNESS)
 
 
+# --- Audio Layer 2 -- Rhythmic Layer: Dynamics.intensity -> pulse density
+def _pulse_density_for_dynamics(dynamics: DynamicsAnalysis | None) -> float:
+    """
+    The first move has no previous position to diff against (dynamics is
+    None), so there is no rhythmic-activity signal yet -- density stays
+    at 0.0 (silent), rather than a guessed "neutral" value. Unlike
+    loudness (which must always produce *some* audible Melody note),
+    Pulse has no such requirement: staying silent until real Dynamics
+    data exists is the honest answer, not an arbitrary default.
+    """
+
+    if dynamics is None:
+        return 0.0
+
+    return pulse_density_for_intensity(dynamics.intensity)
+
+
 def build_audio_mapping(
     analysis: MoveAnalysis,
     dynamics: DynamicsAnalysis | None,
@@ -287,4 +305,6 @@ def build_audio_mapping(
         ),
         dynamics_label=dynamics_label,
         loudness=_loudness_for_dynamics_label(dynamics_label),
+        pulse_density=_pulse_density_for_dynamics(dynamics),
+        pulse_period_seconds=PULSE_PERIOD_SECONDS,
     )

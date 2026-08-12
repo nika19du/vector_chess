@@ -3,6 +3,7 @@ from typing import Mapping
 
 from audio.mapping import harmony_interval_for_balance
 from audio.models import AudioMapping
+from audio.pulse_pattern import PULSE_PERIOD_SECONDS
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,26 @@ class SonificationState:
     harmonic_richness: int
     loudness: float
     segment_key: tuple[str, str]
+
+    # B3: which color's modal timbre (audio/organic_synthesis.py's
+    # WHITE_MODES/BLACK_MODES) the live engine should render Melody
+    # with. Defaulted to "white" so existing direct SonificationState(...)
+    # constructions (tests predating B3) keep working unchanged; the two
+    # builder functions below always set it explicitly from the move's
+    # own AudioMapping.color.
+    color: str = "white"
+
+    # Audio Layer 2 -- Rhythmic Layer: Pulse voice signals (see
+    # audio/pulse_pattern.py). Move/segment-identity-derived, like
+    # loudness -- held constant across a scrub segment, never
+    # continuously interpolated (a move has no meaningful "halfway"
+    # rhythmic density any more than it has a halfway pitch). Defaulted
+    # (density silent, period at the fixed constant) so existing direct
+    # SonificationState(...) constructions predating this milestone keep
+    # working unchanged, exactly like `color`'s own default above; both
+    # builder functions below always set them explicitly.
+    pulse_density: float = 0.0
+    pulse_period_seconds: float = PULSE_PERIOD_SECONDS
 
     # transport / mixer
     master_gain: float = 1.0
@@ -77,6 +98,9 @@ def sonification_state_from_mapping(
         harmonic_richness=mapping.harmonic_richness,
         loudness=mapping.loudness,
         segment_key=segment_key,
+        color=mapping.color,
+        pulse_density=mapping.pulse_density,
+        pulse_period_seconds=mapping.pulse_period_seconds,
         master_gain=master_gain,
         voice_mute=dict(voice_mute) if voice_mute is not None else {},
         voice_solo=dict(voice_solo) if voice_solo is not None else {},
@@ -124,6 +148,9 @@ def interpolate_sonification_state(
         harmonic_richness=segment_mapping.harmonic_richness,
         loudness=segment_mapping.loudness,
         segment_key=segment_key,
+        color=segment_mapping.color,
+        pulse_density=segment_mapping.pulse_density,
+        pulse_period_seconds=segment_mapping.pulse_period_seconds,
         master_gain=master_gain,
         voice_mute=dict(voice_mute) if voice_mute is not None else {},
         voice_solo=dict(voice_solo) if voice_solo is not None else {},

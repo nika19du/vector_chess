@@ -69,25 +69,35 @@ class VoiceRegistry:
 
 def build_default_voice_registry() -> VoiceRegistry:
     """
-    The five voices from docs/audio.md's vocabulary, in the same order
-    as docs/interactive_ui.md Part 5's mixer strip ("Harmony [M][S]
-    Melody [M][S] Accent [M][S] Drone [M][S] Space [M][S]").
+    The six voices from docs/audio.md's vocabulary plus the Audio Layer
+    2 -- Rhythmic Layer milestone's new Pulse voice (see this project's
+    design report), in the same order docs/interactive_ui.md Part 5's
+    mixer strip established for the original five ("Harmony [M][S]
+    Melody [M][S] Accent [M][S] Drone [M][S] Space [M][S]"), with Pulse
+    inserted right after Accent -- the newest *active* voice, grouped
+    with the other real signal sources rather than after the two
+    still-silent, reserved ones.
 
-    Melody, Harmony and Accent have real signal sources today --
-    audio/mapping.py's six MVP signals (destination-square pitch,
-    Attack Influence balance, and capture) already drive them. Drone
-    (Source Field) and Space (Source Potential / Ridge-Valley pan,
-    still colliding -- see docs/interactive_ui.md Review Disposition
-    #17) have no mathematical content until Milestone 4b is scoped, so
-    they are registered but silent: no synthesis code path exists for
-    them anywhere in audio/engine.py, not merely a mapping forced to
-    zero.
+    Melody, Harmony, Accent, and now Pulse have real signal sources --
+    audio/mapping.py's signals (destination-square pitch, Attack
+    Influence balance, capture/check, and now Dynamics.intensity ->
+    pulse density) already drive them. Drone (Source Field) and Space
+    (Source Potential / Ridge-Valley pan, still colliding -- see
+    docs/interactive_ui.md Review Disposition #17) have no mathematical
+    content until Milestone 4b is scoped, so they remain registered but
+    silent: no synthesis code path exists for them anywhere in
+    audio/engine.py, not merely a mapping forced to zero. Per the
+    approved plan, Pulse deliberately does NOT reuse Drone/Space's
+    reserved names -- activating either "merely because it exists" would
+    contradict this registry's own documented reason for keeping them
+    silent.
     """
 
     registry = VoiceRegistry()
     registry.register(Voice("harmony", "Harmony", active=True))
     registry.register(Voice("melody", "Melody", active=True))
     registry.register(Voice("accent", "Accent", active=True))
+    registry.register(Voice("pulse", "Pulse", active=True))
     registry.register(Voice("drone", "Drone", active=False))
     registry.register(Voice("space", "Space", active=False))
     return registry

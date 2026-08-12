@@ -229,6 +229,27 @@ def test_a_quiet_move_pushes_no_trigger(qapp):
     assert engine.triggers == []
 
 
+def test_capturing_check_trigger_kind_is_unaffected_by_the_pulse_voice(qapp):
+    """
+    Audio Layer 2 -- Rhythmic Layer regression: adding the Pulse voice
+    (and its own pulse_density field on the published state) must not
+    change Accent's existing capture/check trigger semantics at all --
+    same single combined trigger, same kind, whatever pulse_density
+    happens to be for this move.
+    """
+
+    session_state, controller, engine = _controller(qapp)
+
+    _play(session_state, ["e2e4", "e7e5", "d1h5", "b8c6", "f1c4", "g8f6", "h5f7"])
+
+    assert len(engine.triggers) == 1
+    assert engine.triggers[0].kind == "capture+check"
+    # The same publish that carries the trigger also carries a real
+    # (not None/missing) pulse_density -- proves the two mechanisms
+    # coexist on one state without one crowding out the other.
+    assert isinstance(engine.published[-1].pulse_density, float)
+
+
 # ---------------------------------------------------------
 # White vs. black timbre
 # ---------------------------------------------------------
@@ -241,6 +262,21 @@ def test_white_move_gets_richness_one_black_move_gets_richness_three(qapp):
 
     assert engine.published[0].harmonic_richness == 1  # white
     assert engine.published[1].harmonic_richness == 3  # black
+
+
+def test_white_and_black_moves_publish_the_correct_color_for_b3_modal_voice_selection(qapp):
+    """
+    B3: the live engine now picks WHITE_MODES/BLACK_MODES (audio/organic_synthesis.py)
+    from SonificationState.color rather than harmonic_richness -- this
+    field must reach AudioController's published state correctly.
+    """
+
+    session_state, controller, engine = _controller(qapp)
+
+    _play(session_state, ["e2e4", "e7e5"])
+
+    assert engine.published[0].color == "white"
+    assert engine.published[1].color == "black"
 
 
 # ---------------------------------------------------------
@@ -262,6 +298,25 @@ def test_harmony_and_loudness_match_the_offline_pipeline_across_a_sequence(qapp)
         assert published_state.harmony_above_melody == (expected.attack_influence_balance >= 0)
         assert published_state.loudness == pytest.approx(expected.loudness)
         assert published_state.pitch_hz == pytest.approx(expected.pitch_hz)
+
+
+def test_pulse_density_matches_the_offline_pipeline_across_a_sequence(qapp):
+    moves = ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4"]
+    session_state, controller, engine = _controller(qapp)
+
+    _play(session_state, moves)
+
+    expected_mappings = _offline_mappings(moves)
+    assert len(engine.published) == len(expected_mappings)
+
+    for published_state, expected in zip(engine.published, expected_mappings):
+        assert published_state.pulse_density == pytest.approx(expected.pulse_density)
+        assert published_state.pulse_period_seconds == pytest.approx(expected.pulse_period_seconds)
+
+    # The first move has no previous MoveAnalysis to diff against --
+    # dynamics is None, so pulse_density is 0.0 (silent), not a guessed
+    # neutral value (unlike loudness).
+    assert engine.published[0].pulse_density == 0.0
 
 
 # ---------------------------------------------------------
@@ -289,6 +344,36 @@ def test_redo_after_undo_matches_the_original_move_again(qapp):
 
     assert len(engine.published) == 4
     assert engine.published[3] == engine.published[1]  # back to the e5 node's own state
+
+
+def test_pulse_density_reproduces_identically_across_undo_redo_and_branch_switch(qapp):
+    """
+    No RNG/seed anywhere in the Pulse mapping (audio/pulse_pattern.py) --
+    pulse_density is a pure function of the node's own Dynamics.intensity,
+    so revisiting the exact same node via undo/redo/branch-switch must
+    reproduce the exact same density every time, with no separate
+    "reseed" bookkeeping to keep in sync with GameNode identity.
+    """
+
+    session_state, controller, engine = _controller(qapp)
+    # A capture sequence -- real mobility/attacker-count/attack-vector
+    # deltas, so pulse_density is meaningfully nonzero, not just always
+    # 0.0 by coincidence.
+    _play(session_state, ["e2e4", "d7d5", "e4d5"])
+    capture_node = session_state.current_node
+    capture_density = engine.published[-1].pulse_density
+    assert capture_density > 0.0  # sanity: this scenario actually exercises a nonzero density
+
+    session_state.undo()
+    session_state.redo()
+    assert engine.published[-1].pulse_density == capture_density
+
+    session_state.undo()  # back to d5 (white to move) -- branch away instead of redoing exd5
+    _play(session_state, ["g1f3"])  # a different, unrelated branch (2.Nf3 instead of 2.exd5)
+
+    session_state.set_current_node(capture_node)  # branch back to the original capture
+
+    assert engine.published[-1].pulse_density == capture_density
 
 
 # ---------------------------------------------------------

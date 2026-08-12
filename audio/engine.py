@@ -34,29 +34,110 @@ factor; a real-time callback cannot look ahead at samples it hasn't
 generated yet, so this is an intentionally approximate, causal
 equivalent: each block scales the sustained bed down (never up) using
 the ANALYTIC worst-case peak bound of the currently-audible continuous
-voices' smoothed amplitudes (melody_amplitude + harmony_amplitude, the
-maximum two sinusoids summing could ever instantaneously reach),
-computed from already-known per-block values -- no lookahead, no extra
-allocation, no analysis. This is deliberately not bit-identical to the
-offline renderer's own measured-peak result, only equivalent in intent
-and effect (see the Phase 5f.3a report for measured before/after
-numbers). The Accent voice is mixed in AFTER this scaling, exactly like
+voices' amplitudes (melody_amplitude + harmony_amplitude, the maximum
+two sinusoids summing could ever instantaneously reach), computed from
+already-known per-block values -- no lookahead, no extra allocation, no
+analysis. This is deliberately not bit-identical to the offline
+renderer's own measured-peak result, only equivalent in intent and
+effect. The Accent voice is mixed in AFTER this scaling, exactly like
 the offline renderer's `mix(sustained, accent)` -- unnormalized,
 protected only by the final safety clip, matching the offline
 renderer's own already-accepted, unchanged behavior for a capturing
 move's accent.
 
-Real-time-safety note (see this module's honest limitation, reported
-alongside the Phase 5f.2 test results): output/mix/phase/decay buffers
-are preallocated once and reused every block via numpy's `out=`
-parameter wherever practical. The additive-synthesis inner loop for the
-Melody voice still allocates small, bounded numpy temporaries per
-block (e.g. `k * phase`, `np.sin(...)`) -- eliminating every one of
-those would require a fully hand-unrolled buffer-management pass this
-phase does not attempt. This does not violate the constraints actually
-required of the hot path (no Qt, no analysis, no PositionCache, no
-locks, no disk I/O, no *large* allocation) but it is not literally
-zero-allocation, and is recorded here rather than silently assumed.
+Real-time-safety note (see this module's honest limitation): output/mix
+buffers are preallocated once and reused every block via numpy's `out=`
+parameter wherever practical. The modal-synthesis inner loop for the
+Melody/Harmony/Accent voices still allocates small, bounded numpy
+temporaries per block (e.g. `ratio * phase`, `np.sin(...)`, one
+`np.exp(...)` per mode) -- eliminating every one of those would require
+a fully hand-unrolled buffer-management pass this phase does not
+attempt. This does not violate the constraints actually required of the
+hot path (no Qt, no analysis, no PositionCache, no locks, no disk I/O,
+no *large* allocation) but it is not literally zero-allocation, and is
+recorded here rather than silently assumed. Note-slot state itself
+(`_ModalNoteState`) is fully preallocated (fixed-size arrays) and never
+allocates on trigger -- see its own docstring.
+
+B3a (restoring B2 timbre evolution live): B3 ported B2's mode
+weights/ratios into the live engine but deliberately did NOT apply each
+mode's own exp(-damping*t) decay for Melody/Harmony, instead keeping
+the old, independently-configurable `_ArticulationEnvelope`
+(attack -> plateau -> fixed-duration decay) as the note's sole temporal
+shape. Phase 1 measurement (experiments/audio_b3a_audit/) confirmed
+this was the audible regression's actual mechanism, not just a
+plausible guess: `_ArticulationEnvelope`'s decay times (0.55s Melody,
+1.1s Harmony) cut a note off roughly 3-5x sooner than B2's own slowest
+(dominant) mode actually needs to reach silence, AND -- independent of
+duration -- a note's relative mode balance never evolved at all while
+audible (every mode stayed at its initial weight until the whole voice
+was gated to zero together), so Black's core "denser at the strike,
+darkens over time" identity was completely flattened live.
+
+Resolution: Melody/Harmony's committed-note BODY, timbre evolution, and
+final silence are now owned entirely by each mode's own accepted-B2
+decay rate (`_ModalNoteState`, below) -- the same `WHITE_MODES`/
+`BLACK_MODES`/`HARMONY_MODES` arrays the offline `OrganicAudioRenderer`
+reads, evaluated via the same shared `evaluate_modal_modes` primitive
+Accent already used since B3. `_ArticulationEnvelope` is retired for
+Melody/Harmony (its class and its own direct unit tests are unaffected,
+audio/organic_synthesis.py's `linear_attack_gate` now owns the one
+remaining separate concern: a short, click-safe 0->1 onset ramp, the
+same shape `modal_resonance`'s own fixed-buffer attack ramp uses
+offline). One system, one clock, no envelope stacked on another.
+
+Retrigger continuity (click-free, no discontinuity on note replacement)
+is handled by giving each of Melody/Harmony two bounded note-slots
+(`_ModalVoice`: `primary`/`secondary`) rather than by borrowing
+`_ArticulationEnvelope`'s "continue from `_last_shape`" trick, which
+does not generalize to per-mode decay (resetting an independent decay
+clock on retrigger would itself reintroduce a click -- see the B3a
+report). A retrigger demotes whatever is currently `primary` to
+`secondary` (a reference swap, not an allocation) and starts a fresh
+note in `primary`; `secondary` simply keeps decaying, untouched, via
+its own already-established curve, until it independently crosses the
+floor. Summing two independently-smooth curves is itself smooth --
+no discontinuity is possible by construction. A third overlapping
+retrigger (before `secondary` has finished) silently retires whatever
+`secondary` currently holds -- a deliberate, bounded (fixed 2 slots)
+simplification, not unbounded polyphony.
+
+Scrub is unaffected by any of this: it never used `_ArticulationEnvelope`
+or per-mode decay, and still doesn't -- a continuously undamped,
+one-pole-smoothed weighted sum (still colored with B2's mode weights/
+ratios), because a decaying voice would be wrong for a held preview
+(requirement: scrub must not fade/retrigger like a plucked note).
+
+Audio Layer 2 -- Rhythmic Layer (Pulse voice): a periodic, deterministic
+k-of-n slot pattern (audio/pulse_pattern.py) derived purely from
+`SonificationState.pulse_density`, using a running *integer* sample
+counter (`_pulse_sample_counter`) reset only when a real committed
+move's NoteTrigger lands -- never during scrub, never on a mixer-only
+republish. Deliberately does NOT reuse the `TriggerBuffer` deque
+mechanism AccentTrigger/NoteTrigger use: that buffer's drop-oldest,
+at-most-one-pop-per-block semantics are correct for rare, independent
+one-shot events (the newest matters, an occasional drop is fine) but
+would be wrong for a *recurring* tick -- dropping the next-due tick
+would be an audible rhythmic glitch, and popping at most once per ~20ms
+block would quantize onsets to 20ms of jitter. Instead, Pulse timing is
+derived fresh every block from the sample counter plus the currently
+published `pulse_period_seconds`/`pulse_density` -- no cross-thread
+queue for Pulse at all, so there is nothing to overflow or starve.
+Playback reuses `_ModalVoice` unchanged (the same bounded 2-slot
+polyphony Melody/Harmony already use) with a new, dedicated
+`PULSE_MODES` timbre (audio/organic_synthesis.py) -- a short, soft,
+harmonic tap, not an inharmonic drum sound.
+
+`_pulse_armed` (not merely `_scrub_active`) gates whether Pulse may
+trigger new ticks at all: it becomes True only when a NoteTrigger is
+consumed (a real committed move), and False the instant
+`set_scrub_active(True)` is called. This is what implements "resume
+only from the real committed-node publish, not immediately from scrub
+release": scrub_active flipping back to False (on `end_scrub`/
+`cancel_scrub`) does not by itself re-arm Pulse -- only the following
+NoteTrigger does, so a scrub cancelled without a subsequent commit
+correctly leaves Pulse silent rather than resuming from a stale,
+pre-scrub pattern.
 """
 
 import collections
@@ -66,8 +147,20 @@ import numpy as np
 
 from audio.backend import AudioBackend, Stream
 from audio.live_state import SonificationState
-from audio.renderer import HARMONY_VOICE_WEIGHT, SUSTAINED_PEAK_HEADROOM
-from audio.synthesis import PERCUSSIVE_CLICK_FREQUENCY_HZ, PERCUSSIVE_DECAY_RATE
+from audio.organic_renderer import HARMONY_GAIN, SUSTAINED_PEAK_HEADROOM
+from audio.organic_synthesis import (
+    ACCENT_BASE_FREQUENCY_HZ,
+    ACCENT_MODES,
+    BLACK_MODES,
+    HARMONY_MODES,
+    PULSE_BASE_FREQUENCY_HZ,
+    PULSE_MODES,
+    WHITE_MODES,
+    ModalModeArrays,
+    evaluate_modal_modes,
+    linear_attack_gate,
+)
+from audio.pulse_pattern import PULSE_SLOTS_PER_PHRASE, pulse_pattern_for_density
 from audio.voices import VoiceRegistry
 
 DEFAULT_SAMPLE_RATE = 44100
@@ -83,49 +176,44 @@ MAX_BLOCK_FRAMES = 8192
 # pragmatic level already approved for Phase 5f.2, addressing
 # docs/interactive_ui.md Finding M4 ("zipper noise") only enough for a
 # proven-voice quality bar, not claimed as that finding's full
-# resolution.
+# resolution. Scrub-only (B3a): committed notes no longer use this.
 DEFAULT_SMOOTHING_COEFFICIENT = 0.2
 
 DEFAULT_TRIGGER_BUFFER_CAPACITY = 4
 
-# Below this envelope amplitude the accent voice is considered finished
-# and stops advancing/contributing.
-ACCENT_ENVELOPE_FLOOR = 1e-4
+# Below this envelope amplitude a one-shot/committed modal voice
+# (Accent, or -- B3a -- a Melody/Harmony note-slot) is considered
+# finished and stops advancing/contributing. Shared by `_AccentState`
+# and `_ModalNoteState` -- one floor, one meaning, not two independently
+# tuned values that could quietly drift apart.
+MODAL_ENVELOPE_FLOOR = 1e-4
 
-# Phase 5f.4a -- Live voice articulation.
-#
-# Melody and Harmony previously had no note concept at all: their
-# oscillators ran forever, only ever retuned via the same one-pole
-# smoother used for zipper-noise suppression, which is exactly what
-# made a new move sound like a siren-style portamento sweep rather than
-# a struck note. This phase adds a bounded, per-voice
-# attack -> optional plateau -> exponential-decay-to-silence envelope
-# (see `_ArticulationEnvelope` below), used whenever the engine is NOT
-# in active scrub mode. While `_scrub_active` is True, Melody/Harmony
-# keep their original always-on, continuously-retuned behavior
-# unchanged -- that is the already-tested, intentional "one continuous
-# morphing preview voice" scrub contract
-# (tests/test_desktop_app_main_window_audio_scrub.py's own "harmony
-# should glide continuously" assertion), not a bug this phase touches.
-#
-# These durations are deliberately named, separate constants rather
-# than inlined literals: starting points for tuning after the manual
-# listening protocol (docs/audio.md), not sacred values. Melody is the
-# short, foreground, "struck" voice; Harmony is the softer, longer,
-# receding support voice -- see this module's own report for the
-# rationale.
+# Fixed ceiling on modes-per-voice this engine ever preallocates
+# fixed-size arrays for -- comfortably above WHITE_MODES (4), BLACK_MODES
+# (5), HARMONY_MODES (2), ACCENT_MODES (3), so `_ModalNoteState.trigger`
+# never needs to grow/reallocate its arrays.
+MAX_MODE_COUNT = 5
+
+# B3a -- the one remaining per-voice articulation knob: a short, linear,
+# click-safe onset ramp (audio.organic_synthesis.linear_attack_gate).
+# Note BODY/decay is no longer independently configurable -- it is
+# whatever the accepted B2 mode dampings say it is (see module
+# docstring). Melody is the short, foreground, "struck" voice; Harmony's
+# onset is a touch softer, matching B2's own HARMONY_MODAL_PARAMS spirit.
 MELODY_ATTACK_SECONDS = 0.012
-MELODY_PLATEAU_SECONDS = 0.12
-MELODY_DECAY_SECONDS = 0.55
-
 HARMONY_ATTACK_SECONDS = 0.045
-HARMONY_PLATEAU_SECONDS = 0.0
-HARMONY_DECAY_SECONDS = 1.1
 
-# Below this shape fraction (of peak), a Melody/Harmony note is
-# considered finished and the voice goes fully silent until the next
-# retrigger -- same order of magnitude and intent as ACCENT_ENVELOPE_FLOOR.
-ARTICULATION_ENVELOPE_FLOOR = 1e-4
+# Pulse (Audio Layer 2): a short, soft, restrained attack -- shorter
+# than Melody's (this is a background tap, not a foreground note).
+PULSE_ATTACK_SECONDS = 0.008
+
+# Fixed, deliberately quiet -- Pulse's only signal is *how often* it
+# ticks (pulse_density), not how loud any single tick is. Keeping
+# per-tick amplitude constant (not scaled by density or loudness) keeps
+# that one signal legible: density changes frequency of events, nothing
+# else. Comparable in spirit to HARMONY_GAIN (subordinate to Melody),
+# but quieter still -- Pulse is a texture layer, not a harmonic partner.
+PULSE_GAIN = 0.35
 
 
 @dataclass(frozen=True)
@@ -145,11 +233,11 @@ class AccentTrigger:
 @dataclass(frozen=True)
 class NoteTrigger:
     """
-    A one-shot retrigger event for the Melody/Harmony articulation
-    envelopes (Phase 5f.4a). No payload needed: pitch, timbre, and
+    A one-shot retrigger event for the Melody/Harmony note-slots
+    (`_ModalVoice.trigger`). No payload needed: pitch, timbre, and
     loudness for the note already live in whatever `SonificationState`
-    was just published via `publish()` -- this only says "restart your
-    envelope now." Pushed exactly once per committed move
+    was just published via `publish()` -- this only says "start a new
+    note now." Pushed exactly once per committed move
     (AudioController._on_current_node_changed), never during scrub
     preview.
     """
@@ -192,8 +280,13 @@ class _SmoothedParameter:
 
 
 class _OscillatorState:
-    """Mutable, audio-thread-owned state for one continuous voice.
-    Never shared with the UI thread."""
+    """
+    Mutable, audio-thread-owned state for one continuously-retuned
+    voice. B3a: scrub-only -- committed Melody/Harmony notes use
+    `_ModalVoice`/`_ModalNoteState` instead (see module docstring for
+    why the two are genuinely different concerns, not the same
+    mechanism reused). Never shared with the UI thread.
+    """
 
     def __init__(self) -> None:
         self.phase = 0.0
@@ -215,92 +308,157 @@ class _AccentState:
         self.loudness = loudness
 
 
-class _ArticulationEnvelope:
+class _ModalNoteState:
     """
-    Mutable, audio-thread-owned attack -> optional plateau ->
-    exponential-decay-to-silence shape (0..1 multiplier) for one
-    continuous voice's amplitude in committed/idle (non-scrub) mode.
-    Phase 5f.4a.
+    Mutable, audio-thread-owned, bounded, audio-thread-owned state for
+    one committed Melody/Harmony note (B3a). Mode arrays are fixed-size
+    (`MAX_MODE_COUNT`), preallocated once in `__init__` and only ever
+    overwritten in place by `trigger()` -- never resized, never
+    reallocated, so retriggering a note is zero-allocation.
 
-    Closed-form, evaluated as a function of elapsed time since the last
-    `trigger()` call, exactly like `_AccentState`/`_render_accent`
-    already do for the one-shot accent voice -- `render()` fills a
-    per-sample array in one vectorized pass (never a single scalar per
-    block), so the shape stays continuous even when a stage boundary
-    (e.g. attack -> plateau) falls in the middle of a block.
-
-    Retrigger-safe by construction: `trigger()` captures whatever shape
-    value the envelope last produced (`_last_shape`) and uses it as the
-    new attack ramp's starting point instead of forcing a hard drop to
-    0 -- a rapid retrigger during decay ramps smoothly back up from
-    wherever it currently is, never introducing an amplitude
-    discontinuity (see this module's report on click/pop prevention).
+    Rendering reuses `evaluate_modal_modes` (audio/organic_synthesis.py)
+    directly: each mode's frequency is fixed for this note's whole life
+    (no continuous-glide concept here, unlike scrub's `_OscillatorState`),
+    so absolute time-since-trigger is the natural, correct clock -- the
+    same approach Accent already used since B3, and the same approach
+    `modal_resonance` uses offline for a whole fixed-length clip.
     """
 
-    def __init__(
-        self,
-        *,
-        attack_seconds: float,
-        plateau_seconds: float,
-        decay_seconds: float,
-        floor: float,
-    ) -> None:
-        self._attack_seconds = attack_seconds
-        self._plateau_seconds = plateau_seconds
-        self._plateau_end = attack_seconds + plateau_seconds
-        self._floor = floor
-        # Exponential decay rate solved so the shape reaches `floor`
-        # exactly `decay_seconds` after decay begins (decay always
-        # starts from shape == 1.0).
-        self._decay_rate = -np.log(floor) / decay_seconds if decay_seconds > 0.0 else float("inf")
-
+    def __init__(self) -> None:
         self.active = False
         self.elapsed_seconds = 0.0
-        self._attack_start_shape = 0.0
-        self._last_shape = 0.0
+        self.mode_count = 0
+        self.weights = np.zeros(MAX_MODE_COUNT)
+        self.dampings = np.zeros(MAX_MODE_COUNT)
+        self.frequencies_hz = np.zeros(MAX_MODE_COUNT)
+        self.weight_sum = 1.0
+        self.amplitude = 0.0
+        self.attack_seconds = 0.0
 
-    def trigger(self) -> None:
-        self._attack_start_shape = self._last_shape
+    def trigger(
+        self,
+        *,
+        fundamental_hz: float,
+        modes: ModalModeArrays,
+        amplitude: float,
+        attack_seconds: float,
+    ) -> None:
+        count = len(modes.weights)
+        self.mode_count = count
+        self.weights[:count] = modes.weights
+        self.dampings[:count] = modes.dampings
+        self.frequencies_hz[:count] = fundamental_hz * modes.ratios
+        self.weight_sum = modes.weight_sum
+        self.amplitude = amplitude
+        self.attack_seconds = attack_seconds
         self.elapsed_seconds = 0.0
         self.active = True
 
-    def render(self, frames: int, sample_rate: int, arange: np.ndarray, out: np.ndarray) -> None:
-        """Writes this block's 0..1 shape multiplier into `out[:frames]`."""
-
-        segment = out[:frames]
+    def render_into(self, buf: np.ndarray, frames: int, sample_rate: int, arange: np.ndarray) -> float:
+        """
+        Adds this note's contribution into `buf[:frames]` (does not
+        clear it first -- callers mix multiple note-slots together).
+        Returns an analytic, causal upper bound on this note's own peak
+        contribution this block (for the sustained-bed headroom
+        computation in `_render_block`) -- 0.0 if inactive.
+        """
 
         if not self.active:
-            segment.fill(0.0)
-            self._last_shape = 0.0
-            return
+            return 0.0
 
+        count = self.mode_count
         t = arange[:frames] / sample_rate + self.elapsed_seconds
+        attack_gate = linear_attack_gate(t, self.attack_seconds)
 
-        attack_mask = t < self._attack_seconds
-        plateau_mask = (~attack_mask) & (t < self._plateau_end)
-        decay_mask = ~attack_mask & ~plateau_mask
-
-        segment[attack_mask] = self._attack_start_shape + (1.0 - self._attack_start_shape) * (
-            t[attack_mask] / self._attack_seconds
+        contribution = evaluate_modal_modes(
+            self.weights[:count], self.dampings[:count], self.frequencies_hz[:count], t
         )
-        segment[plateau_mask] = 1.0
-        segment[decay_mask] = np.exp(-self._decay_rate * (t[decay_mask] - self._plateau_end))
-
-        np.clip(segment, 0.0, 1.0, out=segment)
+        contribution *= attack_gate * (self.amplitude / self.weight_sum)
+        buf[:frames] += contribution
 
         self.elapsed_seconds += frames / sample_rate
 
-        if frames > 0:
-            self._last_shape = float(segment[-1])
-            if self._last_shape < self._floor and t[-1] >= self._plateau_end:
-                self.active = False
-                self._last_shape = 0.0
+        # Modes are constructed with non-decreasing damping by index
+        # (see ModalVoiceParams's docstring), so index 0 is always the
+        # slowest-decaying/dominant mode -- its own envelope (times the
+        # attack gate) is both the peak bound this block and the
+        # deactivation check.
+        dominant_envelope = float(attack_gate[-1] * np.exp(-self.dampings[0] * t[-1]))
+        if dominant_envelope < MODAL_ENVELOPE_FLOOR and t[-1] > self.attack_seconds:
+            self.active = False
+
+        return self.amplitude * dominant_envelope
+
+
+class _ModalVoice:
+    """
+    Two bounded, preallocated note-slots (`primary` = most recently
+    triggered note, `secondary` = the note it superseded, left to keep
+    ringing down independently) for one committed Melody/Harmony voice
+    -- see module docstring for why this replaces
+    `_ArticulationEnvelope`'s single-shape retrigger-continuity trick.
+
+    `trigger()` is a reference swap (`primary, secondary = secondary,
+    primary`) followed by overwriting the now-`primary` slot's fixed
+    arrays in place -- zero allocation, exactly like `_ModalNoteState`
+    itself. A note that was already `secondary` when a third retrigger
+    arrives is silently discarded (retired without ever being read
+    again) -- a deliberate, bounded simplification: real committed
+    moves are not expected to overlap three deep, and unbounded
+    polyphony is explicitly out of scope for this phase.
+    """
+
+    def __init__(self) -> None:
+        self._slot_a = _ModalNoteState()
+        self._slot_b = _ModalNoteState()
+        self.primary = self._slot_a
+        self.secondary = self._slot_b
+
+    def trigger(self, **kwargs) -> None:
+        self.primary, self.secondary = self.secondary, self.primary
+        self.primary.trigger(**kwargs)
+
+    def render_into(self, buf: np.ndarray, frames: int, sample_rate: int, arange: np.ndarray) -> float:
+        peak_bound = self.primary.render_into(buf, frames, sample_rate, arange)
+        peak_bound += self.secondary.render_into(buf, frames, sample_rate, arange)
+        return peak_bound
+
+
+def _sample_boundaries_in_block(block_start_sample: int, frames: int, period_samples: int) -> list[int]:
+    """
+    Every integer multiple of `period_samples` in
+    [block_start_sample, block_start_sample + frames) -- i.e. every
+    Pulse-slot boundary this block's audio actually spans, computed with
+    plain integer arithmetic (no float accumulation drift over a
+    long-running session, unlike repeatedly adding frames/sample_rate).
+    Includes `block_start_sample` itself when it lands exactly on a
+    boundary, so a freshly-armed counter's slot 0 fires immediately
+    rather than after one full period of silence. Handles multiple
+    boundaries in one block correctly (relevant if period_samples is
+    ever smaller than a block, e.g. in a test), not just the common
+    real-world case of at most one.
+    """
+
+    if period_samples <= 0:
+        return []
+
+    block_end_sample = block_start_sample + frames
+    first_boundary = (block_start_sample // period_samples) * period_samples
+    if first_boundary < block_start_sample:
+        first_boundary += period_samples
+
+    boundaries = []
+    boundary = first_boundary
+    while boundary < block_end_sample:
+        boundaries.append(boundary)
+        boundary += period_samples
+    return boundaries
 
 
 class AudioEngine:
     """
     Owns the real-time output stream, the published-state slot, the
-    trigger buffer, and all oscillator/envelope state. Constructed with
+    trigger buffer, and all oscillator/note-slot state. Constructed with
     an injected `AudioBackend` so tests never touch real hardware.
     """
 
@@ -315,12 +473,7 @@ class AudioEngine:
         trigger_capacity: int = DEFAULT_TRIGGER_BUFFER_CAPACITY,
         smoothing_coefficient: float = DEFAULT_SMOOTHING_COEFFICIENT,
         melody_attack_seconds: float = MELODY_ATTACK_SECONDS,
-        melody_plateau_seconds: float = MELODY_PLATEAU_SECONDS,
-        melody_decay_seconds: float = MELODY_DECAY_SECONDS,
         harmony_attack_seconds: float = HARMONY_ATTACK_SECONDS,
-        harmony_plateau_seconds: float = HARMONY_PLATEAU_SECONDS,
-        harmony_decay_seconds: float = HARMONY_DECAY_SECONDS,
-        articulation_envelope_floor: float = ARTICULATION_ENVELOPE_FLOOR,
     ) -> None:
         if channels != 1:
             raise ValueError(
@@ -335,45 +488,44 @@ class AudioEngine:
         self._blocksize = blocksize
         self._channels = channels
         self._smoothing_coefficient = smoothing_coefficient
+        self._melody_attack_seconds = melody_attack_seconds
+        self._harmony_attack_seconds = harmony_attack_seconds
 
         self._arange = np.arange(MAX_BLOCK_FRAMES, dtype=np.float64)
         self._scratch_melody = np.zeros(MAX_BLOCK_FRAMES, dtype=np.float64)
         self._scratch_harmony = np.zeros(MAX_BLOCK_FRAMES, dtype=np.float64)
         self._scratch_accent = np.zeros(MAX_BLOCK_FRAMES, dtype=np.float64)
+        self._scratch_pulse = np.zeros(MAX_BLOCK_FRAMES, dtype=np.float64)
         self._scratch_mix = np.zeros(MAX_BLOCK_FRAMES, dtype=np.float64)
-        self._scratch_melody_envelope = np.zeros(MAX_BLOCK_FRAMES, dtype=np.float64)
-        self._scratch_harmony_envelope = np.zeros(MAX_BLOCK_FRAMES, dtype=np.float64)
 
         self._latest_state: SonificationState | None = None
         self._trigger_buffer = TriggerBuffer(trigger_capacity)
         self._note_trigger_buffer = TriggerBuffer(trigger_capacity)
 
-        self._melody_osc = _OscillatorState()
-        self._harmony_osc = _OscillatorState()
+        self._melody_osc = _OscillatorState()  # scrub-only, see class docstring
+        self._harmony_osc = _OscillatorState()  # scrub-only, see class docstring
         self._accent_state = _AccentState()
 
-        # Phase 5f.4a: True only while AudioController's scrub gesture is
-        # active (set via set_scrub_active) -- gates Melody/Harmony
-        # between the original always-on continuous-glide behavior
-        # (scrub preview) and the new envelope-gated, silence-between-
-        # notes behavior (committed/idle playback). Plain attribute,
-        # same GIL-atomic-reassignment safety argument already
-        # documented for `publish()` above -- set from the UI thread,
-        # read from the audio thread, no lock.
-        self._scrub_active = False
+        self._melody_voice = _ModalVoice()
+        self._harmony_voice = _ModalVoice()
+        self._pulse_voice = _ModalVoice()
 
-        self._melody_envelope = _ArticulationEnvelope(
-            attack_seconds=melody_attack_seconds,
-            plateau_seconds=melody_plateau_seconds,
-            decay_seconds=melody_decay_seconds,
-            floor=articulation_envelope_floor,
-        )
-        self._harmony_envelope = _ArticulationEnvelope(
-            attack_seconds=harmony_attack_seconds,
-            plateau_seconds=harmony_plateau_seconds,
-            decay_seconds=harmony_decay_seconds,
-            floor=articulation_envelope_floor,
-        )
+        # Audio Layer 2 -- Rhythmic Layer: integer sample counter (never
+        # float-accumulated, so no drift over a long-running phrase) that
+        # is Pulse's entire clock, plus the "may Pulse trigger new ticks
+        # right now" gate -- see this module's docstring for why this is
+        # a dedicated flag rather than reusing `_scrub_active` directly.
+        self._pulse_sample_counter = 0
+        self._pulse_armed = False
+
+        # True only while AudioController's scrub gesture is active (set
+        # via set_scrub_active) -- gates Melody/Harmony between the
+        # always-on continuous-glide behavior (scrub preview) and the
+        # note-slot-gated, silence-between-notes behavior (committed/idle
+        # playback). Plain attribute, same GIL-atomic-reassignment safety
+        # argument already documented for `publish()` above -- set from
+        # the UI thread, read from the audio thread, no lock.
+        self._scrub_active = False
 
         self._stream: Stream | None = None
         self._running = False
@@ -468,24 +620,31 @@ class AudioEngine:
         self._trigger_buffer.push(trigger)
 
     def push_note_trigger(self) -> None:
-        """Retriggers the Melody/Harmony articulation envelopes (Phase
-        5f.4a). Called once per committed move; never during scrub
-        preview. A bare deque push, same thread-safety as push_event."""
+        """Starts a new committed Melody/Harmony note (B3a: `_ModalVoice.trigger`).
+        Called once per committed move; never during scrub preview. A
+        bare deque push, same thread-safety as push_event."""
 
         self._note_trigger_buffer.push(NoteTrigger())
 
     def set_scrub_active(self, active: bool) -> None:
         """
-        Phase 5f.4a: True while a scrub gesture is in progress -- keeps
-        Melody/Harmony on their original always-on, continuously-glided
-        behavior for scrub preview. False (the default) uses the new
-        envelope-gated, silence-between-notes behavior for ordinary
+        True while a scrub gesture is in progress -- keeps Melody/
+        Harmony on their original always-on, continuously-glided
+        behavior for scrub preview. False (the default) uses the
+        note-slot-gated, silence-between-notes behavior for ordinary
         committed-move playback. Bare attribute write; see this
         attribute's own docstring in __init__ for the thread-safety
         argument.
+
+        Also disarms Pulse (`_pulse_armed = False`) whenever scrub
+        begins -- Pulse only re-arms on the next real committed move's
+        NoteTrigger (see module docstring), never merely because
+        scrub_active later flips back to False.
         """
 
         self._scrub_active = active
+        if active:
+            self._pulse_armed = False
 
     # -- real-time callback (audio thread) ------------------------------
 
@@ -497,12 +656,30 @@ class AudioEngine:
             self._accent_state.trigger(trigger.loudness)
 
         note_trigger = self._note_trigger_buffer.pop()
-        if note_trigger is not None:
-            self._melody_envelope.trigger()
-            self._harmony_envelope.trigger()
+        if note_trigger is not None and state is not None:
+            melody_modes = BLACK_MODES if state.color == "black" else WHITE_MODES
+            self._melody_voice.trigger(
+                fundamental_hz=state.pitch_hz,
+                modes=melody_modes,
+                amplitude=state.loudness,
+                attack_seconds=self._melody_attack_seconds,
+            )
+            self._harmony_voice.trigger(
+                fundamental_hz=_harmony_frequency_for_state(state),
+                modes=HARMONY_MODES,
+                amplitude=state.loudness * HARMONY_GAIN,
+                attack_seconds=self._harmony_attack_seconds,
+            )
+            # Audio Layer 2: a real committed move is exactly the moment
+            # Pulse is allowed to (re)start ticking -- see module
+            # docstring on why this is a dedicated arm/reset, not merely
+            # "scrub_active is False".
+            self._pulse_sample_counter = 0
+            self._pulse_armed = True
 
         melody, melody_amplitude = self._render_melody(state, frames)
         harmony, harmony_amplitude = self._render_harmony(state, frames)
+        pulse, pulse_amplitude = self._render_pulse(state, frames)
         accent = self._render_accent(frames)
 
         sustained_buf = self._scratch_mix[:frames]
@@ -517,10 +694,6 @@ class AudioEngine:
                 # Phase 5f.5: mute always wins for that voice, even when
                 # it is simultaneously soloed -- checked first and
                 # unconditionally, before solo-mode gating ever applies.
-                # (Previously solo-mode ignored mute entirely for a
-                # voice that was both muted and soloed; this is the
-                # fix identified while wiring the Mixer UI to this
-                # contract, not a Mixer-side workaround.)
                 if mute.get(voice_id, False):
                     return False
                 if any_solo:
@@ -529,6 +702,7 @@ class AudioEngine:
 
             melody_audible = audible("melody")
             harmony_audible = audible("harmony")
+            pulse_audible = audible("pulse")
 
             peak_bound = 0.0
             if melody_audible:
@@ -537,11 +711,17 @@ class AudioEngine:
             if harmony_audible:
                 sustained_buf += harmony
                 peak_bound += harmony_amplitude
+            if pulse_audible:
+                # Pulse joins the headroom-managed sustained bed, not
+                # Accent's raw/unnormalized-after-headroom mix: unlike
+                # Accent (rare, one-shot per capture/check), Pulse ticks
+                # recur regularly, so letting it bypass headroom the way
+                # Accent does would risk routine, frequent clipping
+                # rather than Accent's rare transient.
+                sustained_buf += pulse
+                peak_bound += pulse_amplitude
 
             # Sustained-bed headroom -- see this module's docstring.
-            # Mirrors audio.renderer's `_normalize_to_peak(mix(melody,
-            # harmony), SUSTAINED_PEAK_HEADROOM)`: scale DOWN only, never
-            # up, and only the two continuous voices, never the accent.
             if peak_bound > SUSTAINED_PEAK_HEADROOM:
                 sustained_buf *= SUSTAINED_PEAK_HEADROOM / peak_bound
 
@@ -565,107 +745,112 @@ class AudioEngine:
     def _render_melody(self, state: SonificationState | None, frames: int) -> tuple[np.ndarray, float]:
         osc = self._melody_osc
         buf = self._scratch_melody[:frames]
-
-        if state is None:
-            target_frequency, target_amplitude, richness = 0.0, 0.0, 1
-        else:
-            target_frequency = state.pitch_hz
-            target_amplitude = state.loudness
-            richness = max(1, state.harmonic_richness)
+        buf.fill(0.0)
 
         if self._scrub_active:
-            # Scrub preview (Phase 5f.4, unchanged): one continuously
+            # Scrub preview (unchanged mechanism): one continuously
             # morphing voice -- both frequency and amplitude chase their
-            # targets via the same one-pole smoother.
+            # targets via the same one-pole smoother. Colored with the
+            # accepted B2 mode weights/ratios (including Black's
+            # sub-octave) but deliberately undamped -- see this module's
+            # docstring for why a decaying voice would be wrong here.
+            if state is None:
+                target_frequency, target_amplitude, modes = 0.0, 0.0, WHITE_MODES
+            else:
+                target_frequency = state.pitch_hz
+                target_amplitude = state.loudness
+                modes = BLACK_MODES if state.color == "black" else WHITE_MODES
+
             frequency = osc.smoothed_frequency.update(target_frequency, self._smoothing_coefficient)
             amplitude = osc.smoothed_amplitude.update(target_amplitude, self._smoothing_coefficient)
 
-            buf.fill(0.0)
             if frequency > 0.0 and amplitude > 0.0:
                 t = self._arange[:frames] / self._sample_rate
                 phase = osc.phase + 2 * np.pi * frequency * t
-                weight_sum = 0.0
-                for partial_index in range(1, richness + 1):
-                    weight = 1.0 / partial_index
-                    weight_sum += weight
-                    buf += weight * np.sin(partial_index * phase)
-                buf *= amplitude / weight_sum
-        else:
-            # Committed/idle mode (Phase 5f.4a): pitch snaps straight to
-            # the target -- no glide, since the previous note has
-            # already decayed toward silence by the time a normally
-            # paced move arrives, so there is nothing to portamento
-            # away from. Amplitude follows the articulation envelope,
-            # not the one-pole smoother.
-            frequency = target_frequency
-            osc.smoothed_frequency.value = target_frequency
+                for weight, ratio in zip(modes.weights, modes.ratios):
+                    buf += weight * np.sin(ratio * phase)
+                buf *= amplitude / modes.weight_sum
 
-            envelope = self._scratch_melody_envelope[:frames]
-            self._melody_envelope.render(frames, self._sample_rate, self._arange, envelope)
+            osc.phase = (osc.phase + 2 * np.pi * frequency * frames / self._sample_rate) % (2 * np.pi)
+            return buf, amplitude
 
-            buf.fill(0.0)
-            if frequency > 0.0 and target_amplitude > 0.0:
-                t = self._arange[:frames] / self._sample_rate
-                phase = osc.phase + 2 * np.pi * frequency * t
-                weight_sum = 0.0
-                for partial_index in range(1, richness + 1):
-                    weight = 1.0 / partial_index
-                    weight_sum += weight
-                    buf += weight * np.sin(partial_index * phase)
-                buf *= (envelope * target_amplitude) / weight_sum
-
-            amplitude = target_amplitude * (float(envelope.max()) if frames > 0 else 0.0)
-            osc.smoothed_amplitude.value = amplitude
-
-        osc.phase = (osc.phase + 2 * np.pi * frequency * frames / self._sample_rate) % (2 * np.pi)
+        # Committed/idle mode (B3a): the note-slot pair owns attack,
+        # body, timbre evolution, and final silence entirely -- see
+        # module docstring. `_melody_osc` is not touched here; it is a
+        # scrub-only concept.
+        amplitude = self._melody_voice.render_into(buf, frames, self._sample_rate, self._arange)
         return buf, amplitude
 
     def _render_harmony(self, state: SonificationState | None, frames: int) -> tuple[np.ndarray, float]:
         osc = self._harmony_osc
         buf = self._scratch_harmony[:frames]
-
-        if state is None:
-            target_frequency, target_amplitude = 0.0, 0.0
-        else:
-            if state.harmony_above_melody:
-                target_frequency = state.pitch_hz * state.harmony_interval_ratio
-            else:
-                target_frequency = state.pitch_hz / state.harmony_interval_ratio
-            target_amplitude = state.loudness * HARMONY_VOICE_WEIGHT
+        buf.fill(0.0)
+        modes = HARMONY_MODES
 
         if self._scrub_active:
+            if state is None:
+                target_frequency, target_amplitude = 0.0, 0.0
+            else:
+                target_frequency = _harmony_frequency_for_state(state)
+                target_amplitude = state.loudness * HARMONY_GAIN
+
             frequency = osc.smoothed_frequency.update(target_frequency, self._smoothing_coefficient)
             amplitude = osc.smoothed_amplitude.update(target_amplitude, self._smoothing_coefficient)
 
             if frequency > 0.0 and amplitude > 0.0:
                 t = self._arange[:frames] / self._sample_rate
                 phase = osc.phase + 2 * np.pi * frequency * t
-                np.sin(phase, out=buf)
-                buf *= amplitude
-            else:
-                buf.fill(0.0)
-        else:
-            frequency = target_frequency
-            osc.smoothed_frequency.value = target_frequency
+                for weight, ratio in zip(modes.weights, modes.ratios):
+                    buf += weight * np.sin(ratio * phase)
+                buf *= amplitude / modes.weight_sum
 
-            envelope = self._scratch_harmony_envelope[:frames]
-            self._harmony_envelope.render(frames, self._sample_rate, self._arange, envelope)
+            osc.phase = (osc.phase + 2 * np.pi * frequency * frames / self._sample_rate) % (2 * np.pi)
+            return buf, amplitude
 
-            if frequency > 0.0 and target_amplitude > 0.0:
-                t = self._arange[:frames] / self._sample_rate
-                phase = osc.phase + 2 * np.pi * frequency * t
-                np.sin(phase, out=buf)
-                buf *= envelope * target_amplitude
-            else:
-                buf.fill(0.0)
+        amplitude = self._harmony_voice.render_into(buf, frames, self._sample_rate, self._arange)
+        return buf, amplitude
 
-            amplitude = target_amplitude * (float(envelope.max()) if frames > 0 else 0.0)
-            osc.smoothed_amplitude.value = amplitude
+    def _render_pulse(self, state: SonificationState | None, frames: int) -> tuple[np.ndarray, float]:
+        """
+        Audio Layer 2 -- Rhythmic Layer. No scrub branch (unlike Melody/
+        Harmony): Pulse has exactly one behavior, entirely frozen
+        (`_pulse_armed` False) during scrub and while unarmed, and
+        note-slot-gated (via `_ModalVoice`, same as committed Melody/
+        Harmony) once armed. `_pulse_voice.render_into` is still called
+        unconditionally so an already-ringing tick can finish decaying
+        even in a block where no new tick is scheduled.
+        """
 
-        osc.phase = (osc.phase + 2 * np.pi * frequency * frames / self._sample_rate) % (2 * np.pi)
+        buf = self._scratch_pulse[:frames]
+        buf.fill(0.0)
+
+        if self._pulse_armed and not self._scrub_active and state is not None and state.pulse_period_seconds > 0.0:
+            period_samples = max(1, round(state.pulse_period_seconds * self._sample_rate))
+            pattern = pulse_pattern_for_density(state.pulse_density, PULSE_SLOTS_PER_PHRASE)
+
+            for boundary in _sample_boundaries_in_block(self._pulse_sample_counter, frames, period_samples):
+                slot_index = (boundary // period_samples) % PULSE_SLOTS_PER_PHRASE
+                if pattern[slot_index]:
+                    self._pulse_voice.trigger(
+                        fundamental_hz=PULSE_BASE_FREQUENCY_HZ,
+                        modes=PULSE_MODES,
+                        amplitude=PULSE_GAIN,
+                        attack_seconds=PULSE_ATTACK_SECONDS,
+                    )
+
+            self._pulse_sample_counter += frames
+
+        amplitude = self._pulse_voice.render_into(buf, frames, self._sample_rate, self._arange)
         return buf, amplitude
 
     def _render_accent(self, frames: int) -> np.ndarray:
+        """
+        Accent has no competing outer envelope -- its own
+        `_AccentState.elapsed_seconds` already *is* the note's whole
+        temporal shape. A multi-mode "knock" (ACCENT_MODES), reusing
+        evaluate_modal_modes directly -- unchanged since B3.
+        """
+
         buf = self._scratch_accent[:frames]
         state = self._accent_state
 
@@ -674,13 +859,27 @@ class AudioEngine:
             return buf
 
         t = self._arange[:frames] / self._sample_rate + state.elapsed_seconds
-        decay = np.exp(-PERCUSSIVE_DECAY_RATE * t)
-        np.sin(2 * np.pi * PERCUSSIVE_CLICK_FREQUENCY_HZ * t, out=buf)
-        buf *= decay
-        buf *= state.loudness
+        modes = ACCENT_MODES
+        frequencies_hz = ACCENT_BASE_FREQUENCY_HZ * modes.ratios
+
+        buf[:] = evaluate_modal_modes(modes.weights, modes.dampings, frequencies_hz, t)
+        buf *= state.loudness / modes.weight_sum
 
         state.elapsed_seconds += frames / self._sample_rate
-        if decay[-1] < ACCENT_ENVELOPE_FLOOR:
+        if np.exp(-modes.dampings[0] * t[-1]) < MODAL_ENVELOPE_FLOOR:
             state.active = False
 
         return buf
+
+
+def _harmony_frequency_for_state(state: SonificationState) -> float:
+    """Same balance-sign direction rule as audio/organic_renderer.py's
+    own `_harmony_frequency` (balance >= 0 raises the interval above the
+    melody pitch, balance < 0 lowers it below), expressed in terms of
+    the live `SonificationState.harmony_above_melody` flag rather than
+    the raw balance value -- `AudioController`/`audio.live_state` already
+    reduce that sign to this boolean once, upstream."""
+
+    if state.harmony_above_melody:
+        return state.pitch_hz * state.harmony_interval_ratio
+    return state.pitch_hz / state.harmony_interval_ratio

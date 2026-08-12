@@ -61,6 +61,7 @@ def test_main_window_constructs_with_a_mixer_panel(qapp, qtbot):
         "harmony",
         "melody",
         "accent",
+        "pulse",
         "drone",
         "space",
     }
