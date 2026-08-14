@@ -257,6 +257,155 @@ def test_clicking_the_badge_again_collapses_the_sibling_row(qapp, qtbot):
 
 
 # ---------------------------------------------------------
+# variation selector (Branch Exploration V1)
+# ---------------------------------------------------------
+
+
+def _three_siblings(session_state):
+    """Builds root -> {e4, d4, c4} (in that creation order) and returns the three nodes."""
+    session_state.make_move(chess.Move.from_uci("e2e4"))
+    e4_node = session_state.current_node
+    session_state.undo()
+    session_state.make_move(chess.Move.from_uci("d2d4"))
+    d4_node = session_state.current_node
+    session_state.undo()
+    session_state.make_move(chess.Move.from_uci("c2c4"))
+    c4_node = session_state.current_node
+    return e4_node, d4_node, c4_node
+
+
+def test_no_variation_selector_when_current_node_has_no_siblings(qapp, qtbot):
+    panel, session_state = _panel(qapp)
+    session_state.make_move(chess.Move.from_uci("e2e4"))
+    qtbot.wait(10)
+
+    assert panel._variation_indicators == {}
+    assert panel._variation_prev_buttons == {}
+    assert panel._variation_next_buttons == {}
+
+
+def test_no_variation_selector_at_the_root(qapp):
+    panel, _ = _panel(qapp)  # initial build: root only, synchronous
+
+    assert panel._variation_indicators == {}
+
+
+def test_variation_selector_shows_index_and_total_with_three_siblings(qapp, qtbot):
+    panel, session_state = _panel(qapp)
+    _, _, c4_node = _three_siblings(session_state)
+    qtbot.wait(10)
+
+    assert panel._variation_indicators[c4_node].text() == "variation 3/3"
+
+
+def test_variation_prev_button_disabled_at_first_variation(qapp, qtbot):
+    panel, session_state = _panel(qapp)
+    e4_node, _, _ = _three_siblings(session_state)
+    qtbot.wait(10)
+
+    session_state.set_current_node(e4_node)  # index 0 of 3
+    qtbot.wait(10)
+
+    assert panel._variation_prev_buttons[e4_node].isEnabled() is False
+    assert panel._variation_next_buttons[e4_node].isEnabled() is True
+
+
+def test_variation_next_button_disabled_at_last_variation(qapp, qtbot):
+    panel, session_state = _panel(qapp)
+    _, _, c4_node = _three_siblings(session_state)  # c4 is index 2 of 3, already current
+    qtbot.wait(10)
+
+    assert panel._variation_next_buttons[c4_node].isEnabled() is False
+    assert panel._variation_prev_buttons[c4_node].isEnabled() is True
+
+
+def test_middle_variation_has_both_selector_buttons_enabled(qapp, qtbot):
+    panel, session_state = _panel(qapp)
+    _, d4_node, _ = _three_siblings(session_state)
+    qtbot.wait(10)
+
+    session_state.set_current_node(d4_node)  # index 1 of 3
+    qtbot.wait(10)
+
+    assert panel._variation_prev_buttons[d4_node].isEnabled() is True
+    assert panel._variation_next_buttons[d4_node].isEnabled() is True
+
+
+def test_clicking_next_variation_button_navigates_to_the_next_sibling(qapp, qtbot):
+    panel, session_state = _panel(qapp)
+    e4_node, d4_node, _ = _three_siblings(session_state)
+    qtbot.wait(10)
+
+    session_state.set_current_node(e4_node)
+    qtbot.wait(10)
+
+    panel._variation_next_buttons[e4_node].click()
+
+    assert session_state.current_node is d4_node
+    qtbot.wait(10)  # drain the rebuild this click scheduled (parentless test widget; see note above)
+
+
+def test_clicking_previous_variation_button_navigates_to_the_previous_sibling(qapp, qtbot):
+    panel, session_state = _panel(qapp)
+    e4_node, d4_node, _ = _three_siblings(session_state)
+    qtbot.wait(10)
+
+    session_state.set_current_node(d4_node)
+    qtbot.wait(10)
+
+    panel._variation_prev_buttons[d4_node].click()
+
+    assert session_state.current_node is e4_node
+    qtbot.wait(10)
+
+
+def test_selecting_a_variation_via_the_selector_becomes_the_new_active_child(qapp, qtbot):
+    panel, session_state = _panel(qapp)
+    e4_node, d4_node, _ = _three_siblings(session_state)  # c4 is active_child(root) right now
+    qtbot.wait(10)
+
+    session_state.set_current_node(e4_node)
+    qtbot.wait(10)
+
+    panel._variation_next_buttons[e4_node].click()  # e4 -> d4, via the selector
+    qtbot.wait(10)
+
+    # redo() from root must now follow d4 -- the selector click re-anchored
+    # active_child(root), exactly like a badge/sibling click would.
+    session_state.go_to_start()
+    assert session_state.redo() is True
+    assert session_state.current_node is d4_node
+
+
+def test_rapid_variation_switching_coalesces_into_one_rebuild_with_the_latest_indicator(qapp, qtbot):
+    panel, session_state = _panel(qapp)
+    e4_node, d4_node, c4_node = _three_siblings(session_state)
+    qtbot.wait(10)
+
+    call_count = {"n": 0}
+    original_rebuild = panel._rebuild
+
+    def counting_rebuild():
+        call_count["n"] += 1
+        original_rebuild()
+
+    panel._rebuild = counting_rebuild
+
+    # Three rapid direct jumps between siblings, no event-loop turn between them.
+    session_state.set_current_node(e4_node)
+    session_state.set_current_node(d4_node)
+    session_state.set_current_node(c4_node)
+
+    assert call_count["n"] == 0  # nothing rebuilt yet -- all three just scheduled
+
+    qtbot.wait(10)
+
+    assert call_count["n"] == 1  # coalesced into exactly one rebuild
+    assert panel._variation_indicators[c4_node].text() == "variation 3/3"
+    assert e4_node not in panel._variation_indicators  # stale node's selector is gone, not stacked
+
+
+# ---------------------------------------------------------
 # architectural isolation
 # ---------------------------------------------------------
 

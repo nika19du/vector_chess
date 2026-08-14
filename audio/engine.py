@@ -108,36 +108,45 @@ one-pole-smoothed weighted sum (still colored with B2's mode weights/
 ratios), because a decaying voice would be wrong for a held preview
 (requirement: scrub must not fade/retrigger like a plucked note).
 
-Audio Layer 2 -- Rhythmic Layer (Pulse voice): a periodic, deterministic
-k-of-n slot pattern (audio/pulse_pattern.py) derived purely from
-`SonificationState.pulse_density`, using a running *integer* sample
-counter (`_pulse_sample_counter`) reset only when a real committed
-move's NoteTrigger lands -- never during scrub, never on a mixer-only
-republish. Deliberately does NOT reuse the `TriggerBuffer` deque
-mechanism AccentTrigger/NoteTrigger use: that buffer's drop-oldest,
-at-most-one-pop-per-block semantics are correct for rare, independent
-one-shot events (the newest matters, an occasional drop is fine) but
-would be wrong for a *recurring* tick -- dropping the next-due tick
-would be an audible rhythmic glitch, and popping at most once per ~20ms
-block would quantize onsets to 20ms of jitter. Instead, Pulse timing is
-derived fresh every block from the sample counter plus the currently
-published `pulse_period_seconds`/`pulse_density` -- no cross-thread
-queue for Pulse at all, so there is nothing to overflow or starve.
-Playback reuses `_ModalVoice` unchanged (the same bounded 2-slot
-polyphony Melody/Harmony already use) with a new, dedicated
-`PULSE_MODES` timbre (audio/organic_synthesis.py) -- a short, soft,
-harmonic tap, not an inharmonic drum sound.
+Audio Layer 2 -- Rhythmic Layer, v2 (Pulse voice -- phrase playback):
+v1 modeled Pulse as a periodic, always-armed loop -- a slot index
+computed `% PULSE_SLOTS_PER_PHRASE` every block, wrapping forever once
+armed, with nothing to ever turn it back off except the next move. That
+was diagnosed by listening (confirmed against the code -- see
+experiments/rhythmic_layer_v2/PHASE_A_AUDIT.md) as sounding like a
+metronome. v2 replaces the loop with finite, bounded phrase playback:
 
-`_pulse_armed` (not merely `_scrub_active`) gates whether Pulse may
-trigger new ticks at all: it becomes True only when a NoteTrigger is
-consumed (a real committed move), and False the instant
-`set_scrub_active(True)` is called. This is what implements "resume
-only from the real committed-node publish, not immediately from scrub
-release": scrub_active flipping back to False (on `end_scrub`/
-`cancel_scrub`) does not by itself re-arm Pulse -- only the following
-NoteTrigger does, so a scrub cancelled without a subsequent commit
-correctly leaves Pulse silent rather than resuming from a stale,
-pre-scrub pattern.
+- `audio/phrase.py::build_phrase` runs entirely on the UI/analysis
+  thread (called from `AudioController` via `build_audio_mapping`,
+  never in this callback) and produces an immutable, deterministic
+  `PhraseDescription` -- at most `MAX_PHRASE_EVENTS` (onset, pitch,
+  amplitude) events, carried on `SonificationState.phrase`.
+- On NoteTrigger consumption, `_PhraseSchedule.load()` copies that
+  bounded event list into fixed-size, preallocated audio-thread-owned
+  arrays (zero allocation, same discipline as `_ModalNoteState.trigger`)
+  and resets `_phrase_sample_counter` to 0.
+- Each block, `_render_phrase` checks each scheduled event's onset
+  against the running sample counter and fires it via `_ModalVoice`
+  (the same bounded 2-slot polyphony Melody/Harmony already use) --
+  but each event's `fired` flag latches True the instant it plays, so
+  it can never fire a second time. There is no modulo, no wraparound:
+  once every scheduled event has fired, nothing more happens, ever,
+  until the next NoteTrigger loads a fresh schedule. This is the
+  structural fix, not a tuning change.
+- `_phrase_armed` (not merely `_scrub_active`) gates whether new events
+  may fire at all: True only when a NoteTrigger is consumed (a real
+  committed move), False the instant `set_scrub_active(True)` is
+  called. Re-arming happens only via the next NoteTrigger, never merely
+  because scrub ends -- so a scrub cancelled without a subsequent
+  commit correctly leaves the phrase silent rather than resuming a
+  stale, pre-scrub schedule.
+- Deliberately does NOT use the `TriggerBuffer` deque mechanism
+  AccentTrigger/NoteTrigger use: that buffer's drop-oldest,
+  at-most-one-pop-per-block semantics are right for rare, independent
+  one-shot events, but a phrase is a small (<=4), already-fully-known
+  set of future onsets -- checking each one's own onset against a
+  running counter is simpler and correct by construction, with nothing
+  to overflow or drop.
 """
 
 import collections
@@ -153,14 +162,13 @@ from audio.organic_synthesis import (
     ACCENT_MODES,
     BLACK_MODES,
     HARMONY_MODES,
-    PULSE_BASE_FREQUENCY_HZ,
-    PULSE_MODES,
+    PULSE_MODES_BY_HIT_INDEX,
     WHITE_MODES,
     ModalModeArrays,
     evaluate_modal_modes,
     linear_attack_gate,
 )
-from audio.pulse_pattern import PULSE_SLOTS_PER_PHRASE, pulse_pattern_for_density
+from audio.phrase import MAX_PHRASE_EVENTS, PhraseDescription
 from audio.voices import VoiceRegistry
 
 DEFAULT_SAMPLE_RATE = 44100
@@ -204,16 +212,11 @@ MELODY_ATTACK_SECONDS = 0.012
 HARMONY_ATTACK_SECONDS = 0.045
 
 # Pulse (Audio Layer 2): a short, soft, restrained attack -- shorter
-# than Melody's (this is a background tap, not a foreground note).
+# than Melody's (this is a background tap, not a foreground note). Each
+# phrase event's own amplitude/pitch is precomputed (audio/phrase.py);
+# only the attack ramp shape is an engine-side rendering constant, same
+# category as MELODY_ATTACK_SECONDS/HARMONY_ATTACK_SECONDS above.
 PULSE_ATTACK_SECONDS = 0.008
-
-# Fixed, deliberately quiet -- Pulse's only signal is *how often* it
-# ticks (pulse_density), not how loud any single tick is. Keeping
-# per-tick amplitude constant (not scaled by density or loudness) keeps
-# that one signal legible: density changes frequency of events, nothing
-# else. Comparable in spirit to HARMONY_GAIN (subordinate to Melody),
-# but quieter still -- Pulse is a texture layer, not a harmonic partner.
-PULSE_GAIN = 0.35
 
 
 @dataclass(frozen=True)
@@ -424,35 +427,35 @@ class _ModalVoice:
         return peak_bound
 
 
-def _sample_boundaries_in_block(block_start_sample: int, frames: int, period_samples: int) -> list[int]:
+class _PhraseSchedule:
     """
-    Every integer multiple of `period_samples` in
-    [block_start_sample, block_start_sample + frames) -- i.e. every
-    Pulse-slot boundary this block's audio actually spans, computed with
-    plain integer arithmetic (no float accumulation drift over a
-    long-running session, unlike repeatedly adding frames/sample_rate).
-    Includes `block_start_sample` itself when it lands exactly on a
-    boundary, so a freshly-armed counter's slot 0 fires immediately
-    rather than after one full period of silence. Handles multiple
-    boundaries in one block correctly (relevant if period_samples is
-    ever smaller than a block, e.g. in a test), not just the common
-    real-world case of at most one.
+    Audio-thread-owned, fixed-size (MAX_PHRASE_EVENTS), preallocated
+    schedule for one phrase's worth of events -- overwritten in place by
+    `load()` on every NoteTrigger consumption (zero allocation, same
+    discipline as `_ModalNoteState.trigger`). `count` is how many of the
+    preallocated slots are actually populated this phrase
+    (<= MAX_PHRASE_EVENTS); slots at or beyond `count` are never read.
+    `fired[i]` latches True the instant event `i` has played -- the
+    mechanism that makes each event fire at most once, ever, with no
+    modulo/wraparound anywhere (see module docstring).
     """
 
-    if period_samples <= 0:
-        return []
+    def __init__(self, max_events: int) -> None:
+        self.max_events = max_events
+        self.onset_samples = np.zeros(max_events, dtype=np.int64)
+        self.pitches_hz = np.zeros(max_events)
+        self.amplitudes = np.zeros(max_events)
+        self.fired = np.ones(max_events, dtype=bool)  # inert until load() populates real events
+        self.count = 0
 
-    block_end_sample = block_start_sample + frames
-    first_boundary = (block_start_sample // period_samples) * period_samples
-    if first_boundary < block_start_sample:
-        first_boundary += period_samples
-
-    boundaries = []
-    boundary = first_boundary
-    while boundary < block_end_sample:
-        boundaries.append(boundary)
-        boundary += period_samples
-    return boundaries
+    def load(self, phrase: PhraseDescription, sample_rate: int) -> None:
+        self.count = min(len(phrase.events), self.max_events)
+        for i in range(self.count):
+            event = phrase.events[i]
+            self.onset_samples[i] = int(round(event.onset_seconds * sample_rate))
+            self.pitches_hz[i] = event.pitch_hz
+            self.amplitudes[i] = event.amplitude
+            self.fired[i] = False
 
 
 class AudioEngine:
@@ -510,13 +513,16 @@ class AudioEngine:
         self._harmony_voice = _ModalVoice()
         self._pulse_voice = _ModalVoice()
 
-        # Audio Layer 2 -- Rhythmic Layer: integer sample counter (never
-        # float-accumulated, so no drift over a long-running phrase) that
-        # is Pulse's entire clock, plus the "may Pulse trigger new ticks
-        # right now" gate -- see this module's docstring for why this is
-        # a dedicated flag rather than reusing `_scrub_active` directly.
-        self._pulse_sample_counter = 0
-        self._pulse_armed = False
+        # Audio Layer 2 -- Rhythmic Layer, v2: the current phrase's
+        # bounded event schedule, an integer sample counter (never
+        # float-accumulated, so no drift over a long-running phrase)
+        # measuring time since the phrase started, and the "may new
+        # phrase events fire right now" gate -- see this module's
+        # docstring for why arming is a dedicated flag rather than
+        # reusing `_scrub_active` directly.
+        self._phrase_schedule = _PhraseSchedule(MAX_PHRASE_EVENTS)
+        self._phrase_sample_counter = 0
+        self._phrase_armed = False
 
         # True only while AudioController's scrub gesture is active (set
         # via set_scrub_active) -- gates Melody/Harmony between the
@@ -636,15 +642,15 @@ class AudioEngine:
         attribute's own docstring in __init__ for the thread-safety
         argument.
 
-        Also disarms Pulse (`_pulse_armed = False`) whenever scrub
-        begins -- Pulse only re-arms on the next real committed move's
-        NoteTrigger (see module docstring), never merely because
-        scrub_active later flips back to False.
+        Also disarms the current phrase (`_phrase_armed = False`)
+        whenever scrub begins -- the phrase only re-arms on the next
+        real committed move's NoteTrigger (see module docstring), never
+        merely because scrub_active later flips back to False.
         """
 
         self._scrub_active = active
         if active:
-            self._pulse_armed = False
+            self._phrase_armed = False
 
     # -- real-time callback (audio thread) ------------------------------
 
@@ -670,16 +676,18 @@ class AudioEngine:
                 amplitude=state.loudness * HARMONY_GAIN,
                 attack_seconds=self._harmony_attack_seconds,
             )
-            # Audio Layer 2: a real committed move is exactly the moment
-            # Pulse is allowed to (re)start ticking -- see module
-            # docstring on why this is a dedicated arm/reset, not merely
-            # "scrub_active is False".
-            self._pulse_sample_counter = 0
-            self._pulse_armed = True
+            # Audio Layer 2 -- Rhythmic Layer, v2: a real committed move
+            # loads a fresh, bounded phrase schedule and is exactly the
+            # moment new phrase events are allowed to start firing --
+            # see module docstring on why this is a dedicated arm/reset,
+            # not merely "scrub_active is False".
+            self._phrase_schedule.load(state.phrase, self._sample_rate)
+            self._phrase_sample_counter = 0
+            self._phrase_armed = True
 
         melody, melody_amplitude = self._render_melody(state, frames)
         harmony, harmony_amplitude = self._render_harmony(state, frames)
-        pulse, pulse_amplitude = self._render_pulse(state, frames)
+        pulse, pulse_amplitude = self._render_phrase(frames)
         accent = self._render_accent(frames)
 
         sustained_buf = self._scratch_mix[:frames]
@@ -810,35 +818,44 @@ class AudioEngine:
         amplitude = self._harmony_voice.render_into(buf, frames, self._sample_rate, self._arange)
         return buf, amplitude
 
-    def _render_pulse(self, state: SonificationState | None, frames: int) -> tuple[np.ndarray, float]:
+    def _render_phrase(self, frames: int) -> tuple[np.ndarray, float]:
         """
-        Audio Layer 2 -- Rhythmic Layer. No scrub branch (unlike Melody/
-        Harmony): Pulse has exactly one behavior, entirely frozen
-        (`_pulse_armed` False) during scrub and while unarmed, and
-        note-slot-gated (via `_ModalVoice`, same as committed Melody/
-        Harmony) once armed. `_pulse_voice.render_into` is still called
-        unconditionally so an already-ringing tick can finish decaying
-        even in a block where no new tick is scheduled.
+        Audio Layer 2 -- Rhythmic Layer, v2. No scrub branch (unlike
+        Melody/Harmony): the phrase has exactly one behavior, entirely
+        frozen (`_phrase_armed` False) during scrub and while unarmed,
+        and note-slot-gated (via `_ModalVoice`, same as committed
+        Melody/Harmony) once armed. `_pulse_voice.render_into` is still
+        called unconditionally so an already-ringing event can finish
+        decaying even in a block where no new event fires.
+
+        Every scheduled event fires at most once: `schedule.fired[i]`
+        latches True the instant event `i` plays, so once every
+        scheduled event (at most MAX_PHRASE_EVENTS) has fired, this loop
+        finds nothing left to do, ever, until the next NoteTrigger calls
+        `_phrase_schedule.load()` again -- no modulo, no wraparound, no
+        possibility of the v1 metronome regression recurring here.
         """
 
         buf = self._scratch_pulse[:frames]
         buf.fill(0.0)
 
-        if self._pulse_armed and not self._scrub_active and state is not None and state.pulse_period_seconds > 0.0:
-            period_samples = max(1, round(state.pulse_period_seconds * self._sample_rate))
-            pattern = pulse_pattern_for_density(state.pulse_density, PULSE_SLOTS_PER_PHRASE)
+        if self._phrase_armed and not self._scrub_active:
+            schedule = self._phrase_schedule
+            block_start = self._phrase_sample_counter
+            block_end = block_start + frames
 
-            for boundary in _sample_boundaries_in_block(self._pulse_sample_counter, frames, period_samples):
-                slot_index = (boundary // period_samples) % PULSE_SLOTS_PER_PHRASE
-                if pattern[slot_index]:
+            for i in range(schedule.count):
+                onset = schedule.onset_samples[i]
+                if not schedule.fired[i] and block_start <= onset < block_end:
                     self._pulse_voice.trigger(
-                        fundamental_hz=PULSE_BASE_FREQUENCY_HZ,
-                        modes=PULSE_MODES,
-                        amplitude=PULSE_GAIN,
+                        fundamental_hz=float(schedule.pitches_hz[i]),
+                        modes=PULSE_MODES_BY_HIT_INDEX[i],
+                        amplitude=float(schedule.amplitudes[i]),
                         attack_seconds=PULSE_ATTACK_SECONDS,
                     )
+                    schedule.fired[i] = True
 
-            self._pulse_sample_counter += frames
+            self._phrase_sample_counter += frames
 
         amplitude = self._pulse_voice.render_into(buf, frames, self._sample_rate, self._arange)
         return buf, amplitude

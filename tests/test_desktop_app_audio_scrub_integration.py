@@ -253,6 +253,38 @@ def test_scrubbing_after_switching_branches_through_the_panel(qapp, qtbot):
 
 
 # ---------------------------------------------------------
+# variation selector (Branch Exploration V1): no duplicate/stale audio
+# ---------------------------------------------------------
+
+
+def test_variation_selector_click_fires_exactly_one_audio_trigger(qapp, qtbot):
+    panel, session_state, board_panel, transition_controller, scrub_controller, audio_controller, audio_engine = (
+        _wired_panel(["e2e4"])
+    )
+    e4_node = session_state.current_node
+    session_state.undo()
+    session_state.make_move(chess.Move.from_uci("d2d4"))
+    d4_node = session_state.current_node
+    qtbot.wait(10)
+
+    session_state.set_current_node(e4_node)
+    qtbot.wait(10)
+    # Drain the note-trigger buffer (fires on EVERY committed move, quiet or
+    # not -- unlike _trigger_buffer, which is capture/check-only and stays
+    # empty for e4/d4) so only the selector click below is being measured.
+    while audio_engine._note_trigger_buffer.pop() is not None:
+        pass
+
+    panel._variation_next_buttons[e4_node].click()  # e4 -> d4, via the selector -- same
+    # set_current_node() path as any other jump, so no separate audio wiring
+    # for this control to duplicate or miss a trigger through.
+
+    assert session_state.current_node is d4_node
+    assert len(audio_engine._note_trigger_buffer) == 1  # exactly one trigger, no backlog/duplicate
+    qtbot.wait(10)
+
+
+# ---------------------------------------------------------
 # close / shutdown mid-scrub: no crash, no stray publication, no thread leak
 # ---------------------------------------------------------
 

@@ -220,6 +220,42 @@ def test_external_navigation_during_drag_cancels_the_scrub(qapp, qtbot):
     qtbot.wait(10)
 
 
+def test_variation_selector_click_mid_drag_cancels_the_scrub(qapp, qtbot):
+    """
+    Branch Exploration V1: the new variation-selector buttons are just
+    another externally-driven navigation, same class as a branch badge or a
+    nav button -- clicking one mid-drag must cancel the in-progress scrub
+    cleanly (see test_external_navigation_during_drag_cancels_the_scrub
+    above), not corrupt it or leave a stale preview behind.
+    """
+    panel, session_state, board_panel, transition_controller, scrub_controller = _wired_panel([])
+    session_state.make_move(chess.Move.from_uci("e2e4"))
+    e4_node = session_state.current_node
+    session_state.undo()
+    session_state.make_move(chess.Move.from_uci("d2d4"))
+    d4_node = session_state.current_node
+    session_state.undo()
+    session_state.make_move(chess.Move.from_uci("c2c4"))
+    qtbot.wait(10)
+
+    session_state.set_current_node(e4_node)  # a branch point, siblings d4/c4 exist
+    qtbot.wait(10)
+
+    _press(panel._scrub_strip, 0)
+    assert scrub_controller.is_scrubbing is True
+    _move(panel._scrub_strip, 100)
+    assert board_panel.board_view._preview_node is not None
+    qtbot.wait(10)  # drain the scrub frame this move scheduled before navigating externally
+
+    with qtbot.waitSignal(session_state.current_node_changed, timeout=1000):
+        panel._variation_next_buttons[e4_node].click()  # e4 -> d4, an external nav mid-drag
+
+    assert session_state.current_node is d4_node
+    assert scrub_controller.is_scrubbing is False
+    assert board_panel.board_view._preview_node is None
+    qtbot.wait(10)
+
+
 def test_full_active_branch_is_scrubbable_past_current_node(qapp, qtbot):
     # Resolved scope: scrubbing covers the full active branch (root..tip),
     # not just root..current_node -- undo once, then confirm the strip's

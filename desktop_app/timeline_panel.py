@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QLabel,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -27,6 +28,19 @@ CURRENT_MOVE_HIGHLIGHT_STYLE = "background-color: #eab308; color: #1e293b; font-
 MOVE_BUTTON_STYLE = "text-align: left;"
 BRANCH_BADGE_STYLE = "color: #eab308; font-weight: bold;"
 SIBLING_BUTTON_STYLE = "color: #94a3b8; font-style: italic;"
+# Same gold accent as the badge -- both signal "you are at a branch point,"
+# so the compact selector reads as one visual family with it, not a
+# competing affordance.
+VARIATION_NAV_BUTTON_STYLE = "color: #eab308; font-weight: bold;"
+VARIATION_INDICATOR_STYLE = "color: #eab308;"
+# Branch Comparison V1: a distinct teal accent, deliberately NOT the gold
+# used above (branch/variation navigation) and NOT #38bdf8/#f43f5e (the
+# White/Black board-chrome identity colors, docs/interactive_ui.md's seed
+# palette) -- "Compare variations" is its own affordance, not a restyled
+# navigation control and not a White/Black statement.
+COMPARE_BUTTON_STYLE = "color: #2dd4bf; font-weight: bold;"
+COMPARE_TARGET_BUTTON_STYLE = "color: #2dd4bf; font-style: italic;"
+COMPARE_CANCEL_BUTTON_STYLE = "color: #94a3b8;"
 
 
 class _ScrubStrip(QWidget):
@@ -86,10 +100,16 @@ class _ScrubStrip(QWidget):
         self.setStyleSheet(SCRUB_STRIP_STYLE)
 
     def _is_active(self) -> bool:
+        # Branch Comparison V1: scrub is disabled outright while a
+        # comparison is open (the approved design explicitly rules out dual
+        # scrubbing for V1) -- gating it here, in the single method every
+        # mouse handler below already checks, means press/move/release are
+        # all covered without touching each of them separately.
         return (
             self._board_panel is not None
             and self._transition_controller is not None
             and self._scrub_controller is not None
+            and self._session_state.compare_state is None
         )
 
     def _fraction_from_x(self, x: float, path_length: int) -> ScrubPosition:
@@ -174,6 +194,17 @@ class TimelinePanel(QWidget):
     `set_current_node` call, identical to clicking any other history entry;
     "switching branches" is not a separate mechanism.
 
+    Branch Exploration V1 adds one more affordance next to the badge, only
+    at the branch point currently on screen (the path entry that both has
+    siblings AND is `current_node`): a "variation X/N" label plus small
+    ◀/▶ buttons that step `set_current_node` through `parent.variations` in
+    place, clamped at both ends (no wrap-around) -- for "which of N
+    continuations am I on, and can I nudge to the next one" without
+    expanding the badge first. Like the sibling labels, these buttons are
+    just `set_current_node` calls; they carry no navigation logic of their
+    own and go through the exact same `current_node_changed` pipeline as
+    every other jump in this class.
+
     `current_node_changed`-triggered rebuilds are deferred to the next Qt
     event-loop turn (Qt lifecycle investigation, see the approved diagnosis):
     a nav button's own `.click()` can itself cause `current_node_changed` to
@@ -238,6 +269,27 @@ class TimelinePanel(QWidget):
         self._expanded_branch_points: set[chess.pgn.GameNode] = set()
         self._move_buttons: dict[chess.pgn.GameNode, QPushButton] = {}
         self._branch_badges: dict[chess.pgn.GameNode, QPushButton] = {}
+        # The compact "variation X/N" selector rendered only at the branch
+        # point currently on screen (see class docstring). At most one entry
+        # in each dict exists after any given `_rebuild()`, but these are
+        # kept as node-keyed dicts (not single attributes) for the same
+        # reason `_move_buttons`/`_branch_badges` are: tests and future code
+        # can look a widget up by the node it belongs to without assuming
+        # which node that is.
+        self._variation_prev_buttons: dict[chess.pgn.GameNode, QPushButton] = {}
+        self._variation_next_buttons: dict[chess.pgn.GameNode, QPushButton] = {}
+        self._variation_indicators: dict[chess.pgn.GameNode, QLabel] = {}
+        # Branch Comparison V1: "Compare variations" affordance, rendered
+        # alongside the variation selector above (see
+        # `_add_compare_controls`). `_comparing_from` is TimelinePanel's own
+        # transient "picking B" state -- set only while the inline target
+        # row is expanded for one specific node, never written to
+        # SessionState (SessionState only ever learns about a comparison
+        # once both A and B are chosen, via `enter_compare`).
+        self._comparing_from: chess.pgn.GameNode | None = None
+        self._compare_buttons: dict[chess.pgn.GameNode, QPushButton] = {}
+        self._compare_target_buttons: dict[chess.pgn.GameNode, QPushButton] = {}
+        self._compare_cancel_buttons: dict[chess.pgn.GameNode, QPushButton] = {}
         # True while a rebuild is scheduled but hasn't run yet -- guards
         # against queuing a second QTimer.singleShot before the first one
         # fires, so several current_node_changed signals arriving before the
@@ -309,6 +361,12 @@ class TimelinePanel(QWidget):
             self._audio_controller.cancel_scrub()
         if self._board_panel is not None:
             self._board_panel.set_preview_node(None)
+        # Branch Comparison V1: navigating away cancels any in-progress "pick
+        # B" selection -- SessionState.set_current_node has already exited
+        # any OPEN comparison itself (see its own docstring); this is the
+        # narrower case of a picker row still expanded with no comparison
+        # open yet.
+        self._comparing_from = None
 
         if self._rebuild_scheduled:
             return
@@ -322,6 +380,12 @@ class TimelinePanel(QWidget):
     def _rebuild(self) -> None:
         self._move_buttons.clear()
         self._branch_badges.clear()
+        self._variation_prev_buttons.clear()
+        self._variation_next_buttons.clear()
+        self._variation_indicators.clear()
+        self._compare_buttons.clear()
+        self._compare_target_buttons.clear()
+        self._compare_cancel_buttons.clear()
         while self._moves_layout.count():
             item = self._moves_layout.takeAt(0)
             widget = item.widget()
@@ -363,6 +427,10 @@ class TimelinePanel(QWidget):
                         )
                         self._moves_layout.addWidget(sibling_button)
 
+                if node is current_node:
+                    self._add_variation_selector(parent, node)
+                    self._add_compare_controls(parent, node)
+
         self._moves_layout.addStretch(1)
 
         self._first_button.setEnabled(current_node.parent is not None)
@@ -370,6 +438,139 @@ class TimelinePanel(QWidget):
         can_go_forward = self._session_state.can_redo()
         self._next_button.setEnabled(can_go_forward)
         self._last_button.setEnabled(can_go_forward)
+
+    def _add_variation_selector(self, parent: chess.pgn.GameNode, node: chess.pgn.GameNode) -> None:
+        """
+        The "variation X/N" indicator + ◀/▶ controls (class docstring), added
+        for `node` only when it's both a branch point and `current_node`.
+        `parent.variations` is the same list already used to compute
+        `siblings` above -- order is whatever python-chess assigned as moves
+        were added (the move actually played first at that parent is index
+        0), so "X/N" is stable across rebuilds as long as no further
+        siblings are added at this parent.
+
+        Clamped, not wrapping (approved decision): the ◀ button is disabled
+        at index 0, the ▶ button at the last index, mirroring how
+        `_first_button`/`_last_button` already disable at the ends of the
+        mainline. Both buttons are plain `set_current_node` calls -- picking
+        a variation this way updates `_active_child[parent]` exactly like
+        clicking a sibling label or badge does, since `set_current_node` is
+        the single navigation entry point every jump in this class goes
+        through.
+        """
+        variations = parent.variations
+        total = len(variations)
+        current_index = variations.index(node)
+
+        prev_button = QPushButton("◀")
+        prev_button.setFlat(True)
+        prev_button.setFixedWidth(20)
+        prev_button.setStyleSheet(VARIATION_NAV_BUTTON_STYLE)
+        has_previous = current_index > 0
+        prev_button.setEnabled(has_previous)
+        if has_previous:
+            previous_target = variations[current_index - 1]
+            prev_button.clicked.connect(
+                lambda _checked=False, target=previous_target: self._session_state.set_current_node(target)
+            )
+        self._moves_layout.addWidget(prev_button)
+        self._variation_prev_buttons[node] = prev_button
+
+        indicator = QLabel(f"variation {current_index + 1}/{total}")
+        indicator.setStyleSheet(VARIATION_INDICATOR_STYLE)
+        self._moves_layout.addWidget(indicator)
+        self._variation_indicators[node] = indicator
+
+        next_button = QPushButton("▶")
+        next_button.setFlat(True)
+        next_button.setFixedWidth(20)
+        next_button.setStyleSheet(VARIATION_NAV_BUTTON_STYLE)
+        has_next = current_index < total - 1
+        next_button.setEnabled(has_next)
+        if has_next:
+            next_target = variations[current_index + 1]
+            next_button.clicked.connect(
+                lambda _checked=False, target=next_target: self._session_state.set_current_node(target)
+            )
+        self._moves_layout.addWidget(next_button)
+        self._variation_next_buttons[node] = next_button
+
+    def _add_compare_controls(self, parent: chess.pgn.GameNode, node: chess.pgn.GameNode) -> None:
+        """
+        "Compare variations" (Branch Comparison V1): explicit selection
+        only -- no automatic A-vs-previous-sibling comparison, no separate
+        tree widget. Reads the exact same `parent.variations` sibling list
+        `_add_variation_selector` already renders, so A is always the
+        branch-point variation currently on screen (`node`); the user picks
+        B explicitly.
+
+        Exactly one other sibling exists (the common case: two variations
+        at this branch point) -> the button directly opens the comparison.
+        Three or more exist -> the button expands an inline row of "vs
+        <SAN>" targets instead (mirrors the existing sibling-row
+        expand/collapse pattern used by the branch badge above), so the
+        underlying `session_state.enter_compare()` call is identical either
+        way regardless of how many siblings there are.
+        """
+        others = [child for child in parent.variations if child is not node]
+        if not others:
+            return
+
+        if self._comparing_from is node:
+            self._add_compare_target_row(node, others)
+            return
+
+        button = QPushButton("⇄ Compare")
+        button.setFlat(True)
+        button.setStyleSheet(COMPARE_BUTTON_STYLE)
+        if len(others) == 1:
+            target = others[0]
+            button.clicked.connect(
+                lambda _checked=False, node=node, target=target: self._start_compare(node, target)
+            )
+        else:
+            button.clicked.connect(
+                lambda _checked=False, node=node: self._begin_picking_compare_target(node)
+            )
+        self._moves_layout.addWidget(button)
+        self._compare_buttons[node] = button
+
+    def _add_compare_target_row(self, node: chess.pgn.GameNode, others: list[chess.pgn.GameNode]) -> None:
+        label = QLabel("compare with:")
+        label.setStyleSheet(COMPARE_TARGET_BUTTON_STYLE)
+        self._moves_layout.addWidget(label)
+
+        parent_board = node.parent.board()
+        for sibling in others:
+            sibling_label = parent_board.san(sibling.move)
+            target_button = QPushButton(sibling_label)
+            target_button.setFlat(True)
+            target_button.setStyleSheet(COMPARE_TARGET_BUTTON_STYLE)
+            target_button.clicked.connect(
+                lambda _checked=False, node=node, sibling=sibling: self._start_compare(node, sibling)
+            )
+            self._moves_layout.addWidget(target_button)
+            self._compare_target_buttons[sibling] = target_button
+
+        cancel_button = QPushButton("×")
+        cancel_button.setFlat(True)
+        cancel_button.setFixedWidth(20)
+        cancel_button.setStyleSheet(COMPARE_CANCEL_BUTTON_STYLE)
+        cancel_button.clicked.connect(self._cancel_picking_compare_target)
+        self._moves_layout.addWidget(cancel_button)
+        self._compare_cancel_buttons[node] = cancel_button
+
+    def _begin_picking_compare_target(self, node: chess.pgn.GameNode) -> None:
+        self._comparing_from = node
+        self._rebuild()
+
+    def _cancel_picking_compare_target(self) -> None:
+        self._comparing_from = None
+        self._rebuild()
+
+    def _start_compare(self, node_a: chess.pgn.GameNode, node_b: chess.pgn.GameNode) -> None:
+        self._comparing_from = None
+        self._session_state.enter_compare(node_a, node_b)
 
     def _toggle_branch_point(self, node: chess.pgn.GameNode) -> None:
         if node in self._expanded_branch_points:

@@ -6,6 +6,7 @@ from PySide6.QtCore import QObject, Signal
 
 from chess_engine.models import MoveDetails
 from chess_engine.moves import execute_move
+from desktop_app.compare_state import CompareState, are_valid_siblings
 from desktop_app.transition import TransitionState
 
 
@@ -51,9 +52,18 @@ class SessionState(QObject):
     slice, no monolithic signal, no per-field signal" update propagation
     mechanism the frozen architecture specifies. The remaining slices from Part
     4.1's table (`mixer_state`, `freeze_visualization`, `freeze_audio`,
-    `transport_state`, `camera`, `compare_state`) are added by the phases that
-    first populate them (5f, 5h), as a mechanical repetition of this same
-    pattern -- not a redesign of it.
+    `transport_state`, `camera`) are added by the phases that first populate
+    them, as a mechanical repetition of this same pattern -- not a redesign
+    of it.
+
+    `compare_state` (Branch Comparison V1, the approved design report):
+    `None` when no comparison is open, or a `CompareState(node_a, node_b)`
+    holding two canonical sibling `GameNode` references from the SAME tree
+    `current_node` points into -- never a copy, never a second tree. Entering
+    or exiting a comparison never touches `current_node` or `_active_child`;
+    `current_node` remains authoritative the entire time a comparison is
+    open. See `enter_compare`/`exit_compare` below and `desktop_app.
+    compare_state`'s own docstring for the full read-only contract.
 
     `transition_state` (this milestone) is one further mechanical repetition
     of the same pattern for a slice Part 4.1's table doesn't name explicitly
@@ -85,6 +95,7 @@ class SessionState(QObject):
     current_node_changed = Signal(object)  # emits the new chess.pgn.GameNode
     layer_state_changed = Signal(str)  # emits the layer_id whose visibility changed
     transition_state_changed = Signal()  # payload lives on session_state.transition_state itself
+    compare_state_changed = Signal()  # payload lives on session_state.compare_state itself
 
     def __init__(self, initial_node: chess.pgn.GameNode) -> None:
         super().__init__()
@@ -111,10 +122,43 @@ class SessionState(QObject):
         # is intentional per-branch memory, bounded by the size of the game
         # tree itself (already retained in full), not a leak.
         self._active_child: dict[chess.pgn.GameNode, chess.pgn.GameNode] = {}
+        self._compare_state: CompareState | None = None
 
     @property
     def current_node(self) -> chess.pgn.GameNode:
         return self._current_node
+
+    @property
+    def compare_state(self) -> CompareState | None:
+        return self._compare_state
+
+    def enter_compare(self, node_a: chess.pgn.GameNode, node_b: chess.pgn.GameNode) -> None:
+        """
+        Opens a Branch Comparison between two sibling variations (Branch
+        Comparison V1's sole valid domain -- see `are_valid_siblings`).
+        Raises `ValueError` for anything else (same node twice, a node with
+        no parent, two nodes with different parents) rather than silently
+        allowing an arbitrary-node comparison the design was never validated
+        for.
+
+        Deliberately does not touch `current_node` or `_active_child`:
+        selecting A/B is a read-only view into the existing tree, not a
+        navigation event.
+        """
+        if not are_valid_siblings(node_a, node_b):
+            raise ValueError(
+                "Branch Comparison V1 only supports two distinct direct "
+                "siblings sharing the same parent"
+            )
+        self._compare_state = CompareState(node_a=node_a, node_b=node_b)
+        self.compare_state_changed.emit()
+
+    def exit_compare(self) -> None:
+        """Closes the open comparison, if any. A no-op (no signal) if none is open."""
+        if self._compare_state is None:
+            return
+        self._compare_state = None
+        self.compare_state_changed.emit()
 
     def _mark_active_path(self, node: chess.pgn.GameNode) -> None:
         """
@@ -130,6 +174,16 @@ class SessionState(QObject):
             parent = child.parent
 
     def set_current_node(self, node: chess.pgn.GameNode) -> None:
+        # Branch Comparison V1: every real navigation entry point in this
+        # class funnels through here (make_move, undo, redo, go_to_start,
+        # go_to_end, plus every direct Timeline/scrub-release call), so
+        # exiting compare mode here -- before the no-op guard below -- covers
+        # "any real Timeline navigation action" uniformly, with no separate
+        # exit-compare call needed at each of those call sites. Exits even
+        # when the guard below will make this call a no-op: clicking a nav
+        # button that happens not to move the position is still a real
+        # navigation *action*.
+        self.exit_compare()
         if node.board().board_fen() == self._current_node.board().board_fen():
             return
         # Marking must happen AFTER the equality guard above, not before:
@@ -187,6 +241,21 @@ class SessionState(QObject):
         return True
 
     def redo(self) -> bool:
+        """
+        Formal contract (Branch Exploration V1): `redo()` always follows
+        `_active_child[current_node]` -- the child most recently made active
+        FOR THIS PARENT by any navigation, not necessarily the child played
+        most recently overall, nor first/last in `.variations` order.
+        "Made active" happens uniformly through `set_current_node()`
+        (`_mark_active_path`), whether the child was reached by playing a
+        move, by `redo()` itself, or by a direct jump into a specific
+        sibling (a Timeline branch badge, or the variation selector) -- there
+        is deliberately no separate multi-way "redo, but choose among N"
+        mode; reaching a non-active sibling is always a direct jump, which
+        itself then becomes the new active child going forward. This is
+        exactly the existing behavior below, stated as an intended policy
+        rather than left as an implementation detail.
+        """
         next_node = self._active_child.get(self._current_node)
         if next_node is None:
             return False

@@ -1,7 +1,7 @@
 import math
 
 from audio.models import AudioMapping
-from audio.pulse_pattern import PULSE_PERIOD_SECONDS, pulse_density_for_intensity
+from audio.phrase import build_phrase, pulse_density_for_intensity
 from chess_engine.models import DynamicsAnalysis, MoveAnalysis
 
 # --- Signal 1: color -> timbre ------------------------------------
@@ -254,15 +254,16 @@ def _loudness_for_dynamics_label(label: str | None) -> float:
     return LOUDNESS_BY_LABEL.get(label, NEUTRAL_LOUDNESS)
 
 
-# --- Audio Layer 2 -- Rhythmic Layer: Dynamics.intensity -> pulse density
+# --- Audio Layer 2 -- Rhythmic Layer, v2: Dynamics.intensity -> pulse density
 def _pulse_density_for_dynamics(dynamics: DynamicsAnalysis | None) -> float:
     """
     The first move has no previous position to diff against (dynamics is
     None), so there is no rhythmic-activity signal yet -- density stays
-    at 0.0 (silent), rather than a guessed "neutral" value. Unlike
-    loudness (which must always produce *some* audible Melody note),
-    Pulse has no such requirement: staying silent until real Dynamics
-    data exists is the honest answer, not an arbitrary default.
+    at 0.0, the honest answer rather than a guessed "neutral" value.
+    Density 0.0 still produces a minimal one-event phrase (see
+    audio/phrase.py::event_count_for_density) -- a move is always a
+    musical event, even the quietest one; only how much *internal*
+    activity the phrase has scales with density.
     """
 
     if dynamics is None:
@@ -284,6 +285,10 @@ def build_audio_mapping(
     dynamics_label = dynamics.label if dynamics is not None else None
     balance = analysis.attack_influence_field.balance
     pitch_hz = _pitch_for_square(analysis.to_square)
+    harmony_interval_ratio = _quantize_harmony_ratio(
+        harmony_interval_for_balance(balance, analysis.is_check)
+    )
+    pulse_density = _pulse_density_for_dynamics(dynamics)
 
     return AudioMapping(
         move=analysis.move,
@@ -300,11 +305,18 @@ def build_audio_mapping(
         is_capture=analysis.is_capture,
         is_check=analysis.is_check,
         attack_influence_balance=balance,
-        harmony_interval_ratio=_quantize_harmony_ratio(
-            harmony_interval_for_balance(balance, analysis.is_check)
-        ),
+        harmony_interval_ratio=harmony_interval_ratio,
         dynamics_label=dynamics_label,
         loudness=_loudness_for_dynamics_label(dynamics_label),
-        pulse_density=_pulse_density_for_dynamics(dynamics),
-        pulse_period_seconds=PULSE_PERIOD_SECONDS,
+        pulse_density=pulse_density,
+        # Reuses this same move's already-quantized harmony_interval_ratio
+        # (the exact number Harmony itself sounds) as the phrase's own
+        # "response" pitch relationship -- see audio/phrase.py::build_phrase's
+        # docstring for the full signal-provenance table.
+        phrase=build_phrase(
+            pulse_density=pulse_density,
+            pitch_hz=pitch_hz,
+            harmony_interval_ratio=harmony_interval_ratio,
+            color=analysis.color,
+        ),
     )

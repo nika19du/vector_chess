@@ -231,11 +231,11 @@ def test_a_quiet_move_pushes_no_trigger(qapp):
 
 def test_capturing_check_trigger_kind_is_unaffected_by_the_pulse_voice(qapp):
     """
-    Audio Layer 2 -- Rhythmic Layer regression: adding the Pulse voice
-    (and its own pulse_density field on the published state) must not
-    change Accent's existing capture/check trigger semantics at all --
-    same single combined trigger, same kind, whatever pulse_density
-    happens to be for this move.
+    Audio Layer 2 -- Rhythmic Layer regression: adding the rhythmic
+    Phrase voice (and its own `phrase` field on the published state)
+    must not change Accent's existing capture/check trigger semantics at
+    all -- same single combined trigger, same kind, whatever phrase
+    happens to be generated for this move.
     """
 
     session_state, controller, engine = _controller(qapp)
@@ -245,9 +245,10 @@ def test_capturing_check_trigger_kind_is_unaffected_by_the_pulse_voice(qapp):
     assert len(engine.triggers) == 1
     assert engine.triggers[0].kind == "capture+check"
     # The same publish that carries the trigger also carries a real
-    # (not None/missing) pulse_density -- proves the two mechanisms
-    # coexist on one state without one crowding out the other.
-    assert isinstance(engine.published[-1].pulse_density, float)
+    # (non-empty -- this move's dynamics are far from calm) phrase --
+    # proves the two mechanisms coexist on one state without one
+    # crowding out the other.
+    assert len(engine.published[-1].phrase.events) >= 1
 
 
 # ---------------------------------------------------------
@@ -300,7 +301,7 @@ def test_harmony_and_loudness_match_the_offline_pipeline_across_a_sequence(qapp)
         assert published_state.pitch_hz == pytest.approx(expected.pitch_hz)
 
 
-def test_pulse_density_matches_the_offline_pipeline_across_a_sequence(qapp):
+def test_phrase_matches_the_offline_pipeline_across_a_sequence(qapp):
     moves = ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4"]
     session_state, controller, engine = _controller(qapp)
 
@@ -310,13 +311,14 @@ def test_pulse_density_matches_the_offline_pipeline_across_a_sequence(qapp):
     assert len(engine.published) == len(expected_mappings)
 
     for published_state, expected in zip(engine.published, expected_mappings):
-        assert published_state.pulse_density == pytest.approx(expected.pulse_density)
-        assert published_state.pulse_period_seconds == pytest.approx(expected.pulse_period_seconds)
+        assert published_state.phrase == expected.phrase
 
     # The first move has no previous MoveAnalysis to diff against --
-    # dynamics is None, so pulse_density is 0.0 (silent), not a guessed
-    # neutral value (unlike loudness).
-    assert engine.published[0].pulse_density == 0.0
+    # dynamics is None, so pulse_density is 0.0 -- but a phrase always
+    # has at least its own onset event (a move is always a musical
+    # event, even a calm one; see audio/phrase.py::event_count_for_density).
+    assert len(engine.published[0].phrase.events) == 1
+    assert engine.published[0].phrase.events[0].onset_seconds == 0.0
 
 
 # ---------------------------------------------------------
@@ -346,34 +348,34 @@ def test_redo_after_undo_matches_the_original_move_again(qapp):
     assert engine.published[3] == engine.published[1]  # back to the e5 node's own state
 
 
-def test_pulse_density_reproduces_identically_across_undo_redo_and_branch_switch(qapp):
+def test_phrase_reproduces_identically_across_undo_redo_and_branch_switch(qapp):
     """
-    No RNG/seed anywhere in the Pulse mapping (audio/pulse_pattern.py) --
-    pulse_density is a pure function of the node's own Dynamics.intensity,
+    No RNG/seed anywhere in audio/phrase.py -- a phrase is a pure
+    function of the node's own Dynamics.intensity/pitch/harmony/color,
     so revisiting the exact same node via undo/redo/branch-switch must
-    reproduce the exact same density every time, with no separate
+    reproduce the exact same phrase every time, with no separate
     "reseed" bookkeeping to keep in sync with GameNode identity.
     """
 
     session_state, controller, engine = _controller(qapp)
     # A capture sequence -- real mobility/attacker-count/attack-vector
-    # deltas, so pulse_density is meaningfully nonzero, not just always
-    # 0.0 by coincidence.
+    # deltas, so the phrase has more than its minimal single event, not
+    # just always the degenerate case by coincidence.
     _play(session_state, ["e2e4", "d7d5", "e4d5"])
     capture_node = session_state.current_node
-    capture_density = engine.published[-1].pulse_density
-    assert capture_density > 0.0  # sanity: this scenario actually exercises a nonzero density
+    capture_phrase = engine.published[-1].phrase
+    assert len(capture_phrase.events) > 1  # sanity: this scenario exercises real internal structure
 
     session_state.undo()
     session_state.redo()
-    assert engine.published[-1].pulse_density == capture_density
+    assert engine.published[-1].phrase == capture_phrase
 
     session_state.undo()  # back to d5 (white to move) -- branch away instead of redoing exd5
     _play(session_state, ["g1f3"])  # a different, unrelated branch (2.Nf3 instead of 2.exd5)
 
     session_state.set_current_node(capture_node)  # branch back to the original capture
 
-    assert engine.published[-1].pulse_density == capture_density
+    assert engine.published[-1].phrase == capture_phrase
 
 
 # ---------------------------------------------------------

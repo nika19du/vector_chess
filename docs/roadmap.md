@@ -62,6 +62,14 @@ in docs/interactive_ui.md Part 14.
 
 ... (5a-5f complete; 5g-5j remain)
 
+Branch Exploration V1 (post-5e refinement, not a new lettered phase): the existing
+`chess.pgn.GameNode` tree, per-branch `_active_child` redo memory, and Timeline branch
+badges already gave 5e most of what branching needs (docs/interactive_ui.md Part 4.4);
+V1 adds a compact "variation X/N" indicator with clamped ◀/▶ controls at the branch
+point currently on screen and formalizes `redo()`'s existing most-recently-active-child
+behavior as a stated contract -- no changes to chess logic, PositionCache, audio, or
+transition animation (docs/interactive_ui.md Part 8).
+
 Milestone 6
 
 Critical Point Detection & Hessian Classification (merged from the originally separate "Critical Points" / "Hessian" entries -- classification via the second-derivative test is not a separable concept from detection). Phases: mathematical design note (docs/mathematics.md, Section 9), regression tests for AttackInfluenceSurface, Hessian evaluation, Newton localization, classification, post-classification quality filtering (analysis/critical_point_quality.py), visualization (visualization/critical_points_plot.py), console integration (critical_points_plot command).

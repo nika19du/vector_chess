@@ -555,7 +555,13 @@ dependency.
 **API changes.** None.
 
 **Effect on future milestones.** 5e ("Timeline & scrubbing") includes branch-point
-rendering and switching, not just a linear slider.
+rendering and switching, not just a linear slider. Branch Exploration V1 formalizes
+`redo()`'s existing behavior as the stated policy: it always follows the child most
+recently made active *for that parent*, by any navigation (play, redo, or a direct
+jump such as a branch badge or the variation selector) — never `.variations` list
+order, and never a multi-way "choose among N" prompt of its own; reaching a non-active
+sibling is always a direct jump, which itself then becomes the new active child going
+forward.
 
 ### 4.5 Stable identity across moves — the correspondence problem
 
@@ -821,7 +827,12 @@ is unchanged since v1 — see `docs/audio.md` directly.
   fractional position, scoped to the mainline path from tree root to `current_node`;
   scrubbing across a branch point follows whichever child is currently active.
 - **Switch branches** — clicking the `↳ branch (n)` indicator at a variation point
-  switches which child is active without discarding the other.
+  switches which child is active without discarding the other. Branch Exploration V1
+  adds a compact "variation X/N" indicator with ◀/▶ buttons, shown only at the branch
+  point currently on screen, stepping through `parent.variations` in place (clamped at
+  both ends, no wrap-around) — a faster path to an adjacent sibling than expanding the
+  badge first. Both affordances are plain `set_current_node` calls; neither is a
+  separate navigation mechanism from clicking any other history entry.
 - **Solo one layer / one voice** — independently-scoped controls sharing an interaction
   convention ("solo hides/mutes everything else in this domain"), not a claim that a
   layer and a voice are the same thing (Review Disposition #16).

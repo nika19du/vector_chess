@@ -229,6 +229,101 @@ def test_old_branch_remains_reachable_and_restores_its_exact_position_after_a_ne
 
 
 # ---------------------------------------------------------
+# variation selector (Branch Exploration V1)
+# ---------------------------------------------------------
+
+
+def _three_siblings(session_state):
+    """Builds root -> {e4, d4, c4} (in that creation order) and returns the three nodes."""
+    session_state.make_move(chess.Move.from_uci("e2e4"))
+    e4_node = session_state.current_node
+    session_state.undo()
+    session_state.make_move(chess.Move.from_uci("d2d4"))
+    d4_node = session_state.current_node
+    session_state.undo()
+    session_state.make_move(chess.Move.from_uci("c2c4"))
+    c4_node = session_state.current_node
+    return e4_node, d4_node, c4_node
+
+
+def test_variation_selector_switch_syncs_board_and_canvas(qapp, qtbot):
+    window = MainWindow()
+    qtbot.waitUntil(lambda: window.canvas._overlay_colors is not None, timeout=5000)
+
+    e4_node, d4_node, _ = _three_siblings(window.session_state)
+    qtbot.wait(10)
+
+    window.session_state.set_current_node(e4_node)
+    qtbot.waitUntil(
+        lambda: window.canvas._overlay_colors is not None
+        and (window.canvas._overlay_colors == _expected_vertex_colors(e4_node.board())).all(),
+        timeout=5000,
+    )
+
+    window.timeline_panel._variation_next_buttons[e4_node].click()  # e4 -> d4, a cross-branch jump
+
+    expected = _expected_vertex_colors(d4_node.board())
+    qtbot.waitUntil(
+        lambda: window.canvas._overlay_colors is not None and (window.canvas._overlay_colors == expected).all(),
+        timeout=5000,
+    )
+    assert window.session_state.current_node is d4_node
+    assert window.board_panel.board_view._board_node is d4_node
+
+
+def test_variation_selector_switch_to_a_cached_branch_does_not_recompute(qapp, qtbot):
+    window = MainWindow()
+    qtbot.waitUntil(lambda: window.canvas._overlay_colors is not None, timeout=5000)
+
+    e4_node, d4_node, _ = _three_siblings(window.session_state)
+    qtbot.wait(10)
+
+    # Warm the cache for both e4 and d4 by visiting each once already.
+    window.session_state.set_current_node(e4_node)
+    qtbot.waitUntil(lambda: window.canvas._overlay_colors is not None, timeout=5000)
+    window.session_state.set_current_node(d4_node)
+    qtbot.waitUntil(lambda: window.canvas._overlay_colors is not None, timeout=5000)
+    window.session_state.set_current_node(e4_node)
+    qtbot.wait(10)
+
+    call_count = {"n": 0}
+
+    def counting_builder(board: chess.Board):
+        call_count["n"] += 1
+        return build_full_position_analysis(board)
+
+    window.position_cache._builder = counting_builder
+
+    window.timeline_panel._variation_next_buttons[e4_node].click()  # e4 -> d4, both already cached
+    qtbot.wait(100)
+
+    assert call_count["n"] == 0
+
+
+def test_variation_selector_switch_produces_one_transition_with_no_stale_state(qapp, qtbot):
+    window = MainWindow()
+    qtbot.waitUntil(lambda: window.canvas._overlay_colors is not None, timeout=5000)
+
+    e4_node, d4_node, _ = _three_siblings(window.session_state)
+    e4_fen = e4_node.board().board_fen()
+    d4_fen = d4_node.board().board_fen()
+    qtbot.wait(10)
+
+    window.session_state.set_current_node(e4_node)
+    qtbot.waitUntil(lambda: window.transition_controller._settled_fen == e4_fen, timeout=5000)
+
+    clock = _install_fake_clock_controller(window)
+
+    window.timeline_panel._variation_next_buttons[e4_node].click()  # e4 -> d4, a cross-branch jump
+
+    qtbot.waitUntil(lambda: window.transition_controller._to_fen == d4_fen, timeout=5000)
+    assert window.transition_controller._from_fen == e4_fen  # correct endpoints, no stale target
+
+    _tick(window, clock, seconds=1.0)
+    assert window.transition_controller._settled_fen == d4_fen
+
+
+# ---------------------------------------------------------
 # clean shutdown still works
 # ---------------------------------------------------------
 

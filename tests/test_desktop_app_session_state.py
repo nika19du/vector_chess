@@ -127,16 +127,22 @@ def test_set_layer_opacity_clamps_to_the_zero_to_one_range():
 
 
 def test_session_state_only_exposes_the_slices_implemented_so_far():
-    # Phase 4.1's full design names eight slices; three are implemented so
-    # far (current_node, layer_state, and this milestone's transition_state).
-    # This test guards against silently growing unused signal surface -- the
-    # other slices are added by the phases that first populate them (5f, 5h).
+    # Phase 4.1's full design names eight slices; four are implemented so far
+    # (current_node, layer_state, transition_state, and Branch Comparison
+    # V1's compare_state). This test guards against silently growing unused
+    # signal surface -- the remaining slices are added by the phases that
+    # first populate them.
     signal_names = {
         name
         for name in dir(SessionState)
         if name.endswith("_changed") and not name.startswith("_")
     }
-    assert signal_names == {"current_node_changed", "layer_state_changed", "transition_state_changed"}
+    assert signal_names == {
+        "current_node_changed",
+        "layer_state_changed",
+        "transition_state_changed",
+        "compare_state_changed",
+    }
 
 
 # ---------------------------------------------------------
@@ -296,6 +302,124 @@ def test_a_new_branch_after_undo_invalidates_pending_redo(qtbot):
 
     assert redone is False
     assert received == []
+
+
+# ---------------------------------------------------------
+# Branch Exploration V1: 3+ siblings, redo policy, nested branches
+# ---------------------------------------------------------
+
+
+def test_navigating_back_and_playing_two_different_moves_creates_three_siblings():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    e4_node = state.current_node
+    root = e4_node.parent
+
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))
+    d4_node = state.current_node
+
+    state.undo()
+    state.make_move(chess.Move.from_uci("c2c4"))
+    c4_node = state.current_node
+
+    assert len(root.variations) == 3
+    assert {e4_node, d4_node, c4_node} == set(root.variations)
+
+
+def test_all_three_continuations_remain_intact_and_directly_reachable():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    e4_node = state.current_node
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))
+    d4_node = state.current_node
+    state.undo()
+    state.make_move(chess.Move.from_uci("c2c4"))
+    c4_node = state.current_node
+    root = c4_node.parent
+
+    # Every earlier continuation is still reachable by a direct jump -- none
+    # was deleted by a later divergence at the same parent.
+    state.set_current_node(e4_node)
+    assert state.current_node is e4_node
+    state.set_current_node(d4_node)
+    assert state.current_node is d4_node
+    state.set_current_node(c4_node)
+    assert state.current_node is c4_node
+    assert len(root.variations) == 3
+
+
+def test_redo_follows_the_most_recently_active_child_among_three_siblings():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))
+    state.undo()
+    state.make_move(chess.Move.from_uci("c2c4"))
+    c4_node = state.current_node
+
+    state.go_to_start()
+
+    # redo() must follow the most-recently-active child (c4, played last),
+    # not `.variations` list order (which would be e4, played first).
+    assert state.redo() is True
+    assert state.current_node is c4_node
+
+
+def test_switching_into_a_non_active_sibling_makes_it_the_new_active_child():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    e4_node = state.current_node
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))
+    state.undo()
+    state.make_move(chess.Move.from_uci("c2c4"))  # c4 is active_child(root) now
+    state.go_to_start()
+
+    # A direct jump into e4 -- the FIRST-played (not most-recently-played)
+    # sibling -- simulating a Timeline badge/variation-selector click. This
+    # is the formalized redo() contract (SessionState.redo docstring):
+    # "made active" happens uniformly through set_current_node, whether by
+    # play, redo, or a direct jump.
+    state.set_current_node(e4_node)
+    state.go_to_start()
+
+    assert state.redo() is True
+    assert state.current_node is e4_node  # the direct jump re-anchored redo() to it
+
+
+def test_branch_from_branch_nested_three_levels_deep():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+    state.make_move(chess.Move.from_uci("g1f3"))
+    main_line_tip = state.current_node
+    e5_node = main_line_tip.parent
+
+    # A branch one level up from the tip: 2.Nf3 (main line) vs 2.Bc4.
+    state.set_current_node(e5_node)
+    state.make_move(chess.Move.from_uci("f1c4"))
+    bc4_node = state.current_node
+
+    # A second branch nested INSIDE the first one, one level deeper: after
+    # 2.Bc4, 2...Nc6 vs 2...Nf6 -- not another branch off the main line.
+    state.make_move(chess.Move.from_uci("b8c6"))
+    nc6_node = state.current_node
+    state.set_current_node(bc4_node)
+    state.make_move(chess.Move.from_uci("g8f6"))
+    nf6_node = state.current_node
+
+    assert len(e5_node.variations) == 2  # Nf3, Bc4
+    assert len(bc4_node.variations) == 2  # Nc6, Nf6
+
+    # Every line at every level survives, independently reachable.
+    state.set_current_node(main_line_tip)
+    assert state.current_node is main_line_tip
+    state.set_current_node(nc6_node)
+    assert state.current_node is nc6_node
+    state.set_current_node(nf6_node)
+    assert state.current_node is nf6_node
 
 
 # ---------------------------------------------------------

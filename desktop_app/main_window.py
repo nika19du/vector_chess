@@ -12,6 +12,7 @@ from audio.voices import build_default_voice_registry
 from desktop_app.audio_controller import AudioController
 from desktop_app.audio_mixer_panel import AudioMixerPanel
 from desktop_app.board_panel import MIN_BOARD_PIXELS, BoardPanel
+from desktop_app.compare_panel import ComparePanel
 from desktop_app.gl_canvas import MathCanvas
 from desktop_app.layer_panel import LayerPanel
 from desktop_app.layer_registry import LayerRegistry
@@ -207,6 +208,12 @@ class MainWindow(QMainWindow):
         # needed to keep the two mechanisms from double-drawing it.
         self.canvas.set_layer_order([layer.id for layer in self.layer_registry.all()])
         self.layer_panel = LayerPanel(self.session_state, self.layer_registry, self)
+        # Branch Comparison V1: constructed here (needs session_state and
+        # position_cache, both now built) but added to workspace_row further
+        # down, alongside board_panel/canvas/layer_panel -- see that row's
+        # own comment for why it is a fourth ordinary sibling there, not a
+        # permanent squeeze of the normal three.
+        self.compare_panel = ComparePanel(self.session_state, self.position_cache, self)
         self.transition_controller = TransitionController(
             canvas=self.canvas,
             session_state=self.session_state,
@@ -285,6 +292,13 @@ class MainWindow(QMainWindow):
         workspace_row.addWidget(self.board_panel, 5)
         workspace_row.addWidget(self.canvas, 5)
         workspace_row.addWidget(self.layer_panel, 3)
+        # Branch Comparison V1 (approved design report, section 7): a
+        # dedicated compare workspace, not a permanent squeeze of the normal
+        # three panels above -- `ComparePanel` starts hidden (see its own
+        # __init__) and `_on_compare_state_changed` below hides
+        # board_panel/canvas/layer_panel for exactly as long as it's shown,
+        # so the normal V7 row is restored byte-for-byte on close.
+        workspace_row.addWidget(self.compare_panel, 13)
         root_layout.addLayout(workspace_row, 1)
 
         # The timeline spans the full window width, not just workspace_row's
@@ -304,6 +318,7 @@ class MainWindow(QMainWindow):
         self.position_cache.position_ready.connect(self._on_position_ready)
         self.session_state.current_node_changed.connect(self._on_current_node_changed)
         self.session_state.layer_state_changed.connect(self._on_layer_state_changed)
+        self.session_state.compare_state_changed.connect(self._on_compare_state_changed)
         self.position_cache.request(self.session_state.current_node.board())
 
     def closeEvent(self, event: QCloseEvent) -> None:
@@ -378,6 +393,35 @@ class MainWindow(QMainWindow):
         else:
             self.canvas.set_layer_enabled(layer_id, visible)
             self.canvas.set_layer_opacity(layer_id, opacity)
+
+    def _on_compare_state_changed(self) -> None:
+        """
+        Branch Comparison V1: swaps `workspace_row` between the normal V7
+        triple (board/canvas/layer_panel) and `self.compare_panel` --
+        `ComparePanel` itself already reacts to the same signal to show/hide
+        its own visibility, so this only needs to hide/show the other
+        three. `TransitionController`/`ScrubController`/`AudioController`
+        are untouched here on purpose: `SessionState.current_node` never
+        changes as a side effect of entering or exiting a comparison (see
+        `SessionState.enter_compare`/`exit_compare`), so none of the normal
+        single-position machinery has anything to react to.
+
+        Layout refinement (real-screenshot review): `self.audio_mixer_panel`
+        is also hidden for exactly as long as a comparison is open, and
+        restored on close -- it plays no role in comparison (audio is
+        frozen/non-interactive here, see AudioPolicy in the approved
+        design) and has no navigation function `TimelinePanel` doesn't
+        already provide, so hiding it is safe and gives Compare mode more
+        of the window instead of sharing space with an unrelated control
+        strip. `self.timeline_panel` stays visible and full height: it is
+        the "any real navigation exits compare mode" affordance, so it must
+        stay usable while comparing, not just present.
+        """
+        comparing = self.session_state.compare_state is not None
+        self.board_panel.setVisible(not comparing)
+        self.canvas.setVisible(not comparing)
+        self.layer_panel.setVisible(not comparing)
+        self.audio_mixer_panel.setVisible(not comparing)
 
     def _render_all_layers(self, fen: str) -> None:
         """
