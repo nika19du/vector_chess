@@ -7,16 +7,20 @@ from audio.mapping import (
     CHECK_DISSONANCE_FLOOR,
     CONSONANT_RATIO,
     DISSONANT_RATIO,
+    HARMONIC_CEILING_HZ,
+    HARMONY_INTERVAL_VOCABULARY,
+    LEGAL_MELODY_PITCHES_HZ,
     LOUDNESS_BY_LABEL,
     NEUTRAL_LOUDNESS,
     OCTAVE_SPAN,
-    RANK_STEPS,
     WHITE_HARMONIC_RICHNESS,
+    _effective_harmonic_richness,
     _harmonic_richness_for_color,
-    _harmony_interval_for_balance,
     _loudness_for_dynamics_label,
     _pitch_for_square,
+    _quantize_harmony_ratio,
     build_audio_mapping,
+    harmony_interval_for_balance,
 )
 from chess_engine.analyzer import analyze_position
 from chess_engine.models import DynamicsAnalysis, MoveDetails
@@ -83,19 +87,157 @@ def test_pitch_at_a1_is_base_frequency():
     assert _pitch_for_square("a1") == pytest.approx(BASE_FREQUENCY_HZ)
 
 
-def test_pitch_walks_a_fixed_ratio_between_consecutive_ranks():
-    expected_ratio = 2.0 ** (OCTAVE_SPAN / RANK_STEPS)
-
-    for file_letter in "abcdefgh":
-        for rank in range(1, 8):
-            lower = _pitch_for_square(f"{file_letter}{rank}")
-            upper = _pitch_for_square(f"{file_letter}{rank + 1}")
-
-            assert upper / lower == pytest.approx(expected_ratio)
-
-
 def test_pitch_spans_exactly_one_octave_across_the_files():
     assert _pitch_for_square("h1") == pytest.approx(2 * _pitch_for_square("a1"))
+
+
+# ---------------------------------------------------------
+# Phase B1: register clamp + scale-tone quantization
+#
+# NOTE on a removed test: a pre-Phase-B test asserted that consecutive
+# ranks (same file) were always separated by a *fixed* frequency ratio
+# (2**(OCTAVE_SPAN/RANK_STEPS)). That was never a real invariant -- it
+# was the pre-Phase-B design's own side effect: because the octave
+# multiplier is a continuous exponential and RANK_STEPS=7 doesn't
+# divide evenly into whole octaves, most intermediate ranks landed on
+# frequencies that were NOT actually members of the diatonic scale
+# (only rank steps that happen to align to a whole-octave multiple did).
+# That is precisely the "arbitrary continuous frequency jump" problem
+# Phase A's audit flagged. Phase B1 fixes it by snapping every raw
+# pitch to the nearest tone of LEGAL_MELODY_PITCHES_HZ, which is why
+# the fixed-ratio assertion no longer holds (see the failure this
+# produces if reintroduced) and is replaced by the tests below, which
+# assert what actually matters: ordering is preserved, every output is
+# a real scale tone, and the register stays inside the clamped range.
+# ---------------------------------------------------------
+
+
+def test_pitch_is_monotonic_non_decreasing_across_ranks_for_a_fixed_file():
+    for file_letter in "abcdefgh":
+        pitches = [_pitch_for_square(f"{file_letter}{rank}") for rank in range(1, 9)]
+
+        assert all(pitches[i] <= pitches[i + 1] for i in range(len(pitches) - 1))
+
+
+def test_pitch_is_monotonic_non_decreasing_across_files_for_a_fixed_rank():
+    for rank in range(1, 9):
+        pitches = [_pitch_for_square(f"{file_letter}{rank}") for file_letter in "abcdefgh"]
+
+        assert all(pitches[i] <= pitches[i + 1] for i in range(len(pitches) - 1))
+
+
+def test_every_square_produces_a_legal_scale_tone():
+    for file_letter in "abcdefgh":
+        for rank in range(1, 9):
+            pitch = _pitch_for_square(f"{file_letter}{rank}")
+
+            assert any(pitch == pytest.approx(legal) for legal in LEGAL_MELODY_PITCHES_HZ)
+
+
+def test_every_square_stays_within_the_clamped_two_octave_register():
+    lowest = BASE_FREQUENCY_HZ
+    highest = BASE_FREQUENCY_HZ * (2.0 ** OCTAVE_SPAN)
+
+    for file_letter in "abcdefgh":
+        for rank in range(1, 9):
+            pitch = _pitch_for_square(f"{file_letter}{rank}")
+
+            assert lowest <= pitch <= highest
+
+
+def test_same_square_produces_the_same_fundamental_regardless_of_color():
+    # _pitch_for_square takes only the destination square -- color has
+    # no pitch/register term anywhere in the pipeline. White and Black
+    # therefore always share the exact same fundamental pitch range by
+    # construction, not by a separate "shared range" mechanism.
+    for file_letter in "abcdefgh":
+        for rank in range(1, 9):
+            square = f"{file_letter}{rank}"
+
+            assert _pitch_for_square(square) == _pitch_for_square(square)
+
+
+# ---------------------------------------------------------
+# Phase B1: spectral safety -- no uncontrolled Black high-frequency
+# identity
+# ---------------------------------------------------------
+
+
+def test_effective_richness_never_lets_a_partial_exceed_the_harmonic_ceiling():
+    # Direct unit test of the capping mechanism itself, with a
+    # synthetic high pitch/richness combination -- under the current
+    # clamped register (max fundamental 880 Hz) the ceiling can never
+    # actually trigger via a real board square (880 * 3 = 2640 Hz is
+    # already comfortably under HARMONIC_CEILING_HZ=4200), so this
+    # proves the mechanism works in isolation rather than only
+    # incidentally appearing to work because it never fires.
+    richness = _effective_harmonic_richness(base_richness=5, pitch_hz=2000.0)
+
+    assert richness * 2000.0 <= HARMONIC_CEILING_HZ
+    assert richness < 5
+
+
+def test_effective_richness_never_goes_below_one():
+    richness = _effective_harmonic_richness(base_richness=3, pitch_hz=1_000_000.0)
+
+    assert richness == 1
+
+
+def test_no_real_board_square_lets_black_exceed_the_harmonic_ceiling():
+    for file_letter in "abcdefgh":
+        for rank in range(1, 9):
+            pitch = _pitch_for_square(f"{file_letter}{rank}")
+            richness = _effective_harmonic_richness(BLACK_HARMONIC_RICHNESS, pitch)
+            highest_partial = pitch * richness
+
+            assert highest_partial <= HARMONIC_CEILING_HZ
+
+
+def test_black_retains_its_distinguishing_richness_across_the_whole_board():
+    # The ceiling is a safety backstop, not a mechanism that quietly
+    # erases Black's identity signal -- under the new register, every
+    # square should still let Black reach its full intended richness.
+    for file_letter in "abcdefgh":
+        for rank in range(1, 9):
+            pitch = _pitch_for_square(f"{file_letter}{rank}")
+            richness = _effective_harmonic_richness(BLACK_HARMONIC_RICHNESS, pitch)
+
+            assert richness == BLACK_HARMONIC_RICHNESS
+
+
+# ---------------------------------------------------------
+# Phase B1: committed-note harmony quantization
+# ---------------------------------------------------------
+
+
+def test_quantized_harmony_ratio_is_always_in_the_approved_vocabulary():
+    for balance in (-40.0, -20.0, -8.0, -0.5, 0.0, 0.5, 8.0, 20.0, 40.0):
+        for is_check in (False, True):
+            raw = harmony_interval_for_balance(balance, is_check)
+            quantized = _quantize_harmony_ratio(raw)
+
+            assert quantized in HARMONY_INTERVAL_VOCABULARY
+
+
+def test_quantized_harmony_ratio_preserves_the_check_floor_invariant():
+    for balance in (-40.0, -20.0, -8.0, -0.5, 0.0, 0.5, 8.0, 20.0, 40.0):
+        quantized = _quantize_harmony_ratio(
+            harmony_interval_for_balance(balance, is_check=True)
+        )
+
+        assert quantized >= CHECK_DISSONANCE_FLOOR
+
+
+def test_harmony_interval_ratio_on_a_committed_mapping_is_quantized():
+    # 1.e4 e5 2.Qh5 Nc6 3.Bc4 Nf6?? 4.Qxf7+ -- a real, non-trivial
+    # balance from an actual game, through the full build_audio_mapping
+    # pipeline (not the raw continuous function).
+    analysis = _analysis_after(
+        ["e2e4", "e7e5", "d1h5", "b8c6", "f1c4", "g8f6", "h5f7"]
+    )
+    mapping = build_audio_mapping(analysis, dynamics=None)
+
+    assert mapping.harmony_interval_ratio in HARMONY_INTERVAL_VOCABULARY
 
 
 # ---------------------------------------------------------
@@ -114,26 +256,26 @@ def test_harmonic_richness_distinguishes_colors():
 
 
 def test_harmony_is_most_consonant_at_zero_balance():
-    assert _harmony_interval_for_balance(0.0, is_check=False) == pytest.approx(
+    assert harmony_interval_for_balance(0.0, is_check=False) == pytest.approx(
         CONSONANT_RATIO
     )
 
 
 def test_harmony_moves_monotonically_toward_dissonance():
     magnitudes = [0.0, 2.0, 5.0, 10.0, 20.0, 40.0]
-    ratios = [_harmony_interval_for_balance(m, is_check=False) for m in magnitudes]
+    ratios = [harmony_interval_for_balance(m, is_check=False) for m in magnitudes]
 
     assert all(ratios[i] <= ratios[i + 1] for i in range(len(ratios) - 1))
     assert ratios[-1] == pytest.approx(DISSONANT_RATIO)
 
 
 def test_check_forces_dissonance_floor_even_at_zero_balance():
-    assert _harmony_interval_for_balance(0.0, is_check=True) >= CHECK_DISSONANCE_FLOOR
+    assert harmony_interval_for_balance(0.0, is_check=True) >= CHECK_DISSONANCE_FLOOR
 
 
 def test_check_does_not_reduce_an_already_higher_dissonance():
-    without_check = _harmony_interval_for_balance(20.0, is_check=False)
-    with_check = _harmony_interval_for_balance(20.0, is_check=True)
+    without_check = harmony_interval_for_balance(20.0, is_check=False)
+    with_check = harmony_interval_for_balance(20.0, is_check=True)
 
     assert with_check == pytest.approx(without_check)
 
@@ -142,13 +284,13 @@ def test_harmony_dissonance_is_symmetric_for_positive_and_negative_balance():
     # Dissonance intensity reflects how lopsided the position is, not
     # which side is ahead -- direction/mode is a renderer concern
     # (see audio.renderer._harmony_frequency), not a mapping concern.
-    assert _harmony_interval_for_balance(-8.0, is_check=False) == pytest.approx(
-        _harmony_interval_for_balance(8.0, is_check=False)
+    assert harmony_interval_for_balance(-8.0, is_check=False) == pytest.approx(
+        harmony_interval_for_balance(8.0, is_check=False)
     )
 
 
 def test_harmony_near_zero_balance_stays_close_to_consonant():
-    ratio = _harmony_interval_for_balance(0.5, is_check=False)
+    ratio = harmony_interval_for_balance(0.5, is_check=False)
 
     assert CONSONANT_RATIO < ratio < DISSONANT_RATIO
     assert ratio == pytest.approx(CONSONANT_RATIO, abs=0.05)

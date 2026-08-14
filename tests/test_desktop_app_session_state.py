@@ -127,16 +127,22 @@ def test_set_layer_opacity_clamps_to_the_zero_to_one_range():
 
 
 def test_session_state_only_exposes_the_slices_implemented_so_far():
-    # Phase 4.1's full design names eight slices; three are implemented so
-    # far (current_node, layer_state, and this milestone's transition_state).
-    # This test guards against silently growing unused signal surface -- the
-    # other slices are added by the phases that first populate them (5f, 5h).
+    # Phase 4.1's full design names eight slices; four are implemented so far
+    # (current_node, layer_state, transition_state, and Branch Comparison
+    # V1's compare_state). This test guards against silently growing unused
+    # signal surface -- the remaining slices are added by the phases that
+    # first populate them.
     signal_names = {
         name
         for name in dir(SessionState)
         if name.endswith("_changed") and not name.startswith("_")
     }
-    assert signal_names == {"current_node_changed", "layer_state_changed", "transition_state_changed"}
+    assert signal_names == {
+        "current_node_changed",
+        "layer_state_changed",
+        "transition_state_changed",
+        "compare_state_changed",
+    }
 
 
 # ---------------------------------------------------------
@@ -296,6 +302,374 @@ def test_a_new_branch_after_undo_invalidates_pending_redo(qtbot):
 
     assert redone is False
     assert received == []
+
+
+# ---------------------------------------------------------
+# Branch Exploration V1: 3+ siblings, redo policy, nested branches
+# ---------------------------------------------------------
+
+
+def test_navigating_back_and_playing_two_different_moves_creates_three_siblings():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    e4_node = state.current_node
+    root = e4_node.parent
+
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))
+    d4_node = state.current_node
+
+    state.undo()
+    state.make_move(chess.Move.from_uci("c2c4"))
+    c4_node = state.current_node
+
+    assert len(root.variations) == 3
+    assert {e4_node, d4_node, c4_node} == set(root.variations)
+
+
+def test_all_three_continuations_remain_intact_and_directly_reachable():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    e4_node = state.current_node
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))
+    d4_node = state.current_node
+    state.undo()
+    state.make_move(chess.Move.from_uci("c2c4"))
+    c4_node = state.current_node
+    root = c4_node.parent
+
+    # Every earlier continuation is still reachable by a direct jump -- none
+    # was deleted by a later divergence at the same parent.
+    state.set_current_node(e4_node)
+    assert state.current_node is e4_node
+    state.set_current_node(d4_node)
+    assert state.current_node is d4_node
+    state.set_current_node(c4_node)
+    assert state.current_node is c4_node
+    assert len(root.variations) == 3
+
+
+def test_redo_follows_the_most_recently_active_child_among_three_siblings():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))
+    state.undo()
+    state.make_move(chess.Move.from_uci("c2c4"))
+    c4_node = state.current_node
+
+    state.go_to_start()
+
+    # redo() must follow the most-recently-active child (c4, played last),
+    # not `.variations` list order (which would be e4, played first).
+    assert state.redo() is True
+    assert state.current_node is c4_node
+
+
+def test_switching_into_a_non_active_sibling_makes_it_the_new_active_child():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    e4_node = state.current_node
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))
+    state.undo()
+    state.make_move(chess.Move.from_uci("c2c4"))  # c4 is active_child(root) now
+    state.go_to_start()
+
+    # A direct jump into e4 -- the FIRST-played (not most-recently-played)
+    # sibling -- simulating a Timeline badge/variation-selector click. This
+    # is the formalized redo() contract (SessionState.redo docstring):
+    # "made active" happens uniformly through set_current_node, whether by
+    # play, redo, or a direct jump.
+    state.set_current_node(e4_node)
+    state.go_to_start()
+
+    assert state.redo() is True
+    assert state.current_node is e4_node  # the direct jump re-anchored redo() to it
+
+
+def test_branch_from_branch_nested_three_levels_deep():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+    state.make_move(chess.Move.from_uci("g1f3"))
+    main_line_tip = state.current_node
+    e5_node = main_line_tip.parent
+
+    # A branch one level up from the tip: 2.Nf3 (main line) vs 2.Bc4.
+    state.set_current_node(e5_node)
+    state.make_move(chess.Move.from_uci("f1c4"))
+    bc4_node = state.current_node
+
+    # A second branch nested INSIDE the first one, one level deeper: after
+    # 2.Bc4, 2...Nc6 vs 2...Nf6 -- not another branch off the main line.
+    state.make_move(chess.Move.from_uci("b8c6"))
+    nc6_node = state.current_node
+    state.set_current_node(bc4_node)
+    state.make_move(chess.Move.from_uci("g8f6"))
+    nf6_node = state.current_node
+
+    assert len(e5_node.variations) == 2  # Nf3, Bc4
+    assert len(bc4_node.variations) == 2  # Nc6, Nf6
+
+    # Every line at every level survives, independently reachable.
+    state.set_current_node(main_line_tip)
+    assert state.current_node is main_line_tip
+    state.set_current_node(nc6_node)
+    assert state.current_node is nc6_node
+    state.set_current_node(nf6_node)
+    assert state.current_node is nf6_node
+
+
+# ---------------------------------------------------------
+# Timeline navigation (go_to_start / go_to_end / can_redo / mainline_path)
+# and per-branch active-child memory (Phase 5e)
+# ---------------------------------------------------------
+
+
+def test_can_redo_reflects_whether_a_forward_target_exists():
+    state = SessionState(_root())
+    assert state.can_redo() is False
+
+    state.make_move(chess.Move.from_uci("e2e4"))
+    assert state.can_redo() is False  # at the tip, nothing to redo to
+
+    state.undo()
+    assert state.can_redo() is True  # e2e4 is recorded as the active child of root
+
+
+def test_go_to_start_jumps_to_the_root_from_a_deep_node(qtbot):
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+    root = state.mainline_path()[0]
+
+    with qtbot.waitSignal(state.current_node_changed, timeout=1000):
+        state.go_to_start()
+
+    assert state.current_node is root
+    assert state.current_node.move is None
+
+
+def test_go_to_start_is_a_no_op_at_the_root(qtbot):
+    state = SessionState(_root())
+    root_node = state.current_node
+
+    received = []
+    state.current_node_changed.connect(lambda node: received.append(node))
+
+    state.go_to_start()
+    qtbot.wait(50)
+
+    assert state.current_node is root_node
+    assert received == []
+
+
+def test_go_to_end_walks_the_active_line_to_its_tip_in_one_jump(qtbot):
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+    tip = state.current_node
+    state.go_to_start()
+
+    with qtbot.waitSignal(state.current_node_changed, timeout=1000) as blocker:
+        state.go_to_end()
+
+    assert state.current_node is tip
+    # One jump, one signal emission -- not one per intermediate ply.
+    assert blocker.args[0] is tip
+
+
+def test_go_to_end_is_a_no_op_when_already_at_the_tip(qtbot):
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+
+    received = []
+    state.current_node_changed.connect(lambda node: received.append(node))
+
+    state.go_to_end()
+    qtbot.wait(50)
+
+    assert received == []
+
+
+def test_mainline_path_returns_root_to_current_in_order():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+
+    path = state.mainline_path()
+
+    assert len(path) == 3
+    assert path[0].move is None  # root
+    assert path[1].move == chess.Move.from_uci("e2e4")
+    assert path[2].move == chess.Move.from_uci("e7e5")
+    assert path[-1] is state.current_node
+
+
+def test_mainline_path_at_the_root_is_a_single_node():
+    state = SessionState(_root())
+    path = state.mainline_path()
+    assert path == [state.current_node]
+
+
+def test_go_to_end_follows_the_new_branch_after_undo_and_a_different_move():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))  # a new branch from root
+    new_branch_tip = state.current_node
+
+    state.go_to_start()
+    state.go_to_end()
+
+    assert state.current_node is new_branch_tip
+
+
+def test_go_to_end_resumes_the_old_branch_after_switching_back_into_it():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    old_branch_tip = state.current_node
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))  # new branch becomes active
+
+    # Simulate a Timeline click directly into the old sibling branch --
+    # switching branches is nothing more than a direct set_current_node call.
+    state.set_current_node(old_branch_tip)
+    state.go_to_start()
+
+    state.go_to_end()
+
+    assert state.current_node is old_branch_tip
+
+
+def test_distant_jump_marks_the_entire_path_as_active():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+    state.make_move(chess.Move.from_uci("g1f3"))
+    deep_node = state.current_node
+    state.go_to_start()
+
+    # A single direct jump several plies away (simulating a Timeline click on
+    # a distant history entry), not a sequence of redo() calls.
+    state.set_current_node(deep_node)
+    state.go_to_start()
+
+    assert state.redo() is True
+    assert state.redo() is True
+    assert state.redo() is True
+    assert state.current_node is deep_node
+
+
+def test_same_fen_no_op_does_not_mutate_active_child_for_the_targets_path(qtbot):
+    # set_current_node must no-op (no marking, no signal) whenever the
+    # target's board_fen() matches the current position's -- even if the
+    # target is a genuinely different GameNode with its own real ancestor
+    # chain (a transposition/repetition). This is the regression test for
+    # the ordering fix: _mark_active_path must run AFTER the equality guard,
+    # not before (see SessionState.set_current_node's comment).
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+    real_tip = state.current_node
+
+    # A decoy tree, entirely disconnected from `state`'s own tree, whose tip
+    # reaches the exact same position via the exact same moves -- same
+    # board_fen(), but different GameNode objects and a different (decoy)
+    # parent chain.
+    decoy_root = chess.pgn.Game()
+    decoy_mid = decoy_root.add_variation(chess.Move.from_uci("e2e4"))
+    decoy_tip = decoy_mid.add_variation(chess.Move.from_uci("e7e5"))
+    assert decoy_tip.board().board_fen() == real_tip.board().board_fen()
+
+    received = []
+    state.current_node_changed.connect(lambda node: received.append(node))
+
+    state.set_current_node(decoy_tip)  # same fen as current -> must no-op
+    qtbot.wait(50)
+
+    assert received == []
+    assert state.current_node is real_tip
+    # The decoy's own ancestor edges must never have been recorded --
+    # _mark_active_path must not have run for this no-op call.
+    assert state._active_child.get(decoy_mid) is not decoy_tip
+    assert state._active_child.get(decoy_root) is not decoy_mid
+
+
+# ---------------------------------------------------------
+# active_path (Phase 5e.2: continuous Timeline scrubbing)
+# ---------------------------------------------------------
+
+
+def test_active_path_at_the_root_with_no_history_is_a_single_node():
+    state = SessionState(_root())
+    assert state.active_path() == [state.current_node]
+
+
+def test_active_path_on_a_straight_mainline_with_no_undo_matches_mainline_path():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+
+    assert state.active_path() == state.mainline_path()
+    assert state.active_path()[-1] is state.current_node
+
+
+def test_active_path_extends_past_current_node_after_undo():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+    tip = state.current_node
+    state.undo()  # current_node is now e2e4; e7e5 remains reachable via _active_child
+
+    path = state.active_path()
+
+    assert path[-1] is tip  # extends to the branch tip, past current_node
+    assert state.current_node in path
+    assert path.index(state.current_node) == len(path) - 2  # current_node is one before the tip
+
+
+def test_active_path_reflects_the_newly_active_branch_after_switching():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    old_branch_tip = state.current_node
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))  # new branch becomes active
+    new_branch_tip = state.current_node
+    state.go_to_start()
+
+    # Old branch is no longer reachable from root via _active_child; new
+    # branch (still the active child of root) is what active_path() extends
+    # forward into.
+    path = state.active_path()
+    assert new_branch_tip in path
+    assert old_branch_tip not in path
+
+
+def test_active_path_resumes_the_old_branch_after_switching_back_into_it():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    old_branch_tip = state.current_node
+    state.undo()
+    state.make_move(chess.Move.from_uci("d2d4"))  # new branch becomes active
+
+    state.set_current_node(old_branch_tip)  # switch back into the old branch
+    state.go_to_start()
+
+    path = state.active_path()
+    assert old_branch_tip in path
+
+
+def test_active_path_does_not_duplicate_current_node_at_the_join():
+    state = SessionState(_root())
+    state.make_move(chess.Move.from_uci("e2e4"))
+    state.make_move(chess.Move.from_uci("e7e5"))
+    state.undo()  # current_node = e2e4, with e7e5 still active-forward
+
+    path = state.active_path()
+    assert path.count(state.current_node) == 1
 
 
 # ---------------------------------------------------------

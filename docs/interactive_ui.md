@@ -11,6 +11,21 @@ the sonification rules already ratified in `docs/audio.md`.
 **Status: architecture frozen (v3) — ready for implementation.** See "Final Self-Review"
 at the end of this document.
 
+**Implementation status note (post-v3): Phase 5f (Live Audio) is complete** —
+`AudioEngine`, `AudioController`, live articulation, scrub preview, and the Mixer
+(Part 13) are all built and tested. Contrary to this document's original dependency
+claim below, 5f did **not** end up depending on Milestone 4b: the live runtime was
+built entirely on the already-complete Milestone 4/4a MVP mappings, and 4b's richer
+content (Mobility, Source Field, Source Potential, Gradient, Equipotential,
+Dynamics.intensity — still unimplemented) is additive to the now-working runtime, not
+a precondition for it. See `docs/audio.md`'s "Live Audio Runtime" section and Part 13 /
+Review Disposition #14 below for the corrected record. Two further real
+implementation-vs-design divergences worth noting up front, both corrected in Part 4.1
+and Part 5 below: Mixer state (master gain / mute / solo) is owned by `AudioController`,
+not a `SessionState.mixer_state` slice as originally designed; and `Voice` (the actual
+Voice Registry entry) holds only static `(voice_id, label, active)` metadata, not
+mute/solo state as originally described.
+
 **Revision history.**
 - **v1** — initial design across ten parts (philosophy, layout, board, visualization,
   animation, music, interaction, visual identity, technology, roadmap).
@@ -78,7 +93,7 @@ Grounding used throughout:
 | 11 | No canvas zoom/pan | **Accepted** | Part 8 |
 | 12 | Dominance encoded by hue alone; no accessibility path | **Accepted** | Part 9 — Accessibility |
 | 13 | Top-bar Freeze button contradicts Part 7's two Freeze modes | **Accepted** | Part 2, Part 8 |
-| 14 | Milestone 4b hard-blocks all of Milestone 5, but only live playback needs it | **Accepted** | Part 13 |
+| 14 | Milestone 4b hard-blocks all of Milestone 5, but only live playback needs it | **Accepted at the time; corrected post-implementation** — 5f shipped without depending on 4b (see the implementation status note above) | Part 13 |
 | 15 | Video/MIDI export bundled into the core UI milestone inflates its scope | **Accepted** | Part 13 |
 | 16 | "Solo" vocabulary claims a 1:1 layer↔voice mapping that doesn't exist (7 layers, 5 voices) | **Rejected as stated** | See below |
 | 17 | Source Potential and Ridge/Valley both claim stereo pan, colliding | **Deferred, not fixed here** | See below |
@@ -224,6 +239,118 @@ a variation point in the game tree (Part 4.4). The mixer row is now driven by th
 Registry (Part 5) rather than five hardcoded names, though the default five voices'
 labels are unchanged.
 
+### Implementation note (V0–V7) — what the desktop app actually does
+
+The mockup above is the design target; the implemented `desktop_app/` layout differs in
+several ways the design phase didn't anticipate, all measured and fixed across the V0–V7
+milestones rather than designed up front. No Inspector panel exists yet (Part 4's own
+scope note) beyond the Layers panel described below. As of V7 (desktop workspace layout),
+the built layout is `QMainWindow` → a central widget with an outer `QVBoxLayout` of bands:
+a header row, one primary workspace row, the Timeline strip, then the Live Audio mixer
+strip — each band stacked top to bottom. The primary workspace row is itself a nested
+`QHBoxLayout` holding three ordinary, non-spanning siblings side by side: `BoardPanel`,
+`MathCanvas`, and `LayerPanel`, with stretch factors `5 : 5 : 3` — board and canvas take
+the majority, co-primary share, and the freed width that used to sit unused as dead
+letterbox background around the canvas (previously a `QGridLayout` with the canvas column
+stretched 4× wider than the board column) now goes to `LayerPanel` as a real inspector
+column instead. `TimelinePanel` and `AudioMixerPanel` each span the full window width
+below the workspace row, in that order.
+
+V0–V6a's `QGridLayout` gave `BoardPanel` a `rowSpan=2` so `LayerPanel` could sit in a
+second row beneath the canvas; V7 removed that row-sharing arrangement entirely by giving
+`LayerPanel` its own column in the same row as board and canvas, which also structurally
+resolved the `QGridLayout` row-spanning column-stretch limitation described in earlier
+revisions of this note (see "Board's fixed 400×400 size" below for what that unblocked,
+and what it didn't).
+
+**Responsive behavior.** `MathCanvas` is given `setMinimumHeight(MIN_BOARD_PIXELS)` (400px
+— the same floor governing the board) so it can never collapse into a decorative strip
+regardless of the active system font. This closes a real bug found during the V6 audit:
+under real on-screen Windows rendering (the actual "Segoe UI" system font, ~24px checkbox
+rows) versus the automated test suite's offscreen platform (a smaller fallback font, ~17px
+rows), `LayerPanel`/`AudioMixerPanel`'s uncapped natural height was enough to starve the
+canvas down to as little as 55px tall at 1280×720/1366×768 — a bug the offscreen-only test
+suite structurally could not have caught, since it never exercises real font metrics.
+
+V6a's fix bounded both panels' entire variable-length content (LayerPanel's six layer rows
+*and* its legend together; AudioMixerPanel's whole per-voice mute/solo grid) inside one
+shared fixed-height internal `QScrollArea` each. That shared budget turned out to have a
+second, worse failure mode of its own: a real running app could land on a scroll position
+showing only the legend, with every layer checkbox/opacity-slider/preset combo scrolled
+out of view entirely (visible in a live screenshot that motivated V7), and
+`VOICE_GRID_SCROLL_HEIGHT_PX` (40px) could not fit even one full mute/solo row, let alone
+a header plus five voice rows, cutting every voice row off below the visible window.
+
+V7 fixes both at the root rather than re-tuning the same budget. `LayerPanel`'s preset
+combo and all six layer checkboxes/opacity sliders now live directly in the panel's own
+layout, never inside a `QScrollArea` — structurally guaranteed visible, with no scroll
+position that can hide them. Only the Legend (reference material, read occasionally) keeps
+its own, separate `QScrollArea`. `AudioMixerPanel`'s voice-grid `QScrollArea` height is now
+computed from the grid's own real `sizeHint()` after all voice rows are built, rather than
+a hardcoded constant, so every registered voice's Mute/Solo row is always visible. Both
+panels now sit as ordinary siblings in the primary workspace row (or, for the mixer, its
+own full-width band) with real, content-driven height instead of a small arbitrary ceiling.
+`tests/test_desktop_app_responsive_layout.py` and `tests/test_desktop_app_layout_regression.py`
+carry dedicated, explicitly real-rendering-gated regression tests for the original
+font-metrics bug (skipped, with an honest reason, under the suite's default offscreen
+platform — re-run with `QT_QPA_PLATFORM` unset on a machine with a display to exercise them
+for real), plus offscreen-run structural assertions that the layer controls are never
+descendants of any `QScrollArea` at any target resolution.
+
+**Board's fixed 400×400 size.** The board is bounded `[MIN_BOARD_PIXELS=400,
+BOARD_PIXELS=480]` and, measured at every supported target resolution (1280×720 through
+1920×1080) on both the offscreen test platform and real on-screen rendering, always
+renders at exactly 400×400 — square, legible, never distorted, but never growing toward
+its 480px ceiling on a larger window. Through V6a, the documented root cause was that
+`QGridLayout` does not grow a row-spanning item's column width via `setColumnStretch` even
+with a valid `sizeHint`, an `Expanding` size policy, and an explicit stretch factor all set
+correctly. V7 removed that row span entirely (see above), and confirmed via direct
+measurement that board width *does* grow again once the span is gone. V7 also confirmed,
+empirically, that letting both axes grow independently does not keep the board square:
+width is governed by the primary workspace row's `QHBoxLayout` column allocation while
+height is governed by `BoardPanel`'s own internal `QVBoxLayout` stretch, two genuinely
+separate layout computations with nothing coupling them, and measured the result as a real
+non-square regression (480×422 at 1366×768). Qt's `heightForWidth`/`hasHeightForWidth`
+mechanism was tried as the sanctioned, non-hacky fix for exactly this kind of coupling and
+measured, empirically, to have zero effect: Qt's box-layout stretch redistribution grows an
+`Expanding` item toward its own fixed `maximumSize` using leftover space, independent of
+`heightForWidth`, which only informs preferred/minimum sizing rather than that
+redistribution. A `resizeEvent`-driven manual coupling was ruled out as exactly the kind of
+fragile, jitter-prone workaround this project avoids. `MainWindow` therefore pins
+`board_view.setMaximumWidth(MIN_BOARD_PIXELS)` directly, keeping both axes governed
+identically and the board reliably square — the same accepted, documented, non-blocking
+400×400 limitation as before V7 (400px/side remains fully usable for click-to-move), now
+enforced directly rather than as a side effect of the old row-spanning bug, and left for a
+future milestone rather than solved with a fragile workaround.
+
+**Layer presets.** Five named presets exist over the six registered layers — Overview
+(the default, identical to `SessionState`'s own default visibility/opacity), Influence,
+Flow, Topology, and All Layers — selectable from a combo box in the Layers panel, with a
+"Custom" state inferred (never stored separately) whenever the current visibility/opacity
+doesn't exactly match any preset. See `desktop_app/layer_presets.py`.
+
+**Critical-point glyph language.** Critical points render as shape-coded glyphs matching
+the reference matplotlib markers, not color alone: maximum = filled triangle-up, minimum =
+filled triangle-down, saddle = X (two crossed line segments), degenerate = hollow ring.
+See `desktop_app/layers/_critical_point_glyphs.py`.
+
+**Known, intentional rendering divergences from the matplotlib reference.**
+Equipotential's reference line width (0.7) is below the real cross-vendor floor of
+`glLineWidth` (1.0 by spec) and is clamped up to `MIN_GL_LINE_WIDTH`, rather than left
+unreachable. Gradient renders every vector at one constant line width per frame (the
+reference's own per-vector formula's floor) instead of reproducing its true per-vector
+width variation — per-vector strength is still preserved through alpha, only the width
+dimension is flattened; reproducing true per-vector width would require geometry-based
+(triangle-strip) line rendering, out of scope for the current milestone. Neither
+divergence is a defect; both are documented in code (`desktop_app/layers/
+equipotential_layer.py`, `desktop_app/layers/gradient_layer.py`) and covered by dedicated
+regression tests (`tests/test_desktop_app_line_width_hierarchy.py`).
+
+Source Potential (`analysis/source_potential.py`, `visualization/source_potential_plot.py`)
+has no desktop layer and is not one of the six registered layers — analysis/reference
+implementations exist, but no `desktop_app` code references it. This is an intentional
+scope gap, not a bug.
+
 ---
 
 ## Part 3 — Interactive Chess Board
@@ -262,7 +389,7 @@ mutates another panel's internal widget state directly.**
 | `current_node` | Pointer to the tree node defining "the current position" | Board, Timeline |
 | `selection` | Currently selected/hovered square, critical point, ridge/valley chain, or MS cell | Board (hover), Canvas (click) |
 | `layer_state` | Per-registered-layer visibility / opacity / solo, keyed by `layer_id` (Part 5) | Canvas's layer strip |
-| `mixer_state` | Per-registered-voice mute / solo / volume, keyed by `voice_id` (Part 5) | Bottom mixer strip |
+| `mixer_state` *(as designed; not how 5f was actually built — see below)* | Per-registered-voice mute / solo / volume, keyed by `voice_id` (Part 5) | Bottom mixer strip |
 | `freeze_visualization`, `freeze_audio` | The two independent freeze flags | Top bar |
 | `transport_state` | Playing / Paused / Scrubbing, plus scrub position | Timeline |
 | `camera` (per canvas instance) | Pan offset + zoom scale | Canvas |
@@ -276,11 +403,27 @@ separately. This keeps the dependency one-directional (Registry code may read
 `SessionState`; `SessionState` never depends on Registry code) and avoids a circular
 import between the two.
 
+**As actually implemented (5f), `mixer_state` does not exist on `SessionState`.**
+`layer_state` was built exactly as designed above. Mixer state (master gain, per-voice
+mute, per-voice solo) turned out not to be chess/session state in the same sense —
+`AudioController` (`desktop_app/audio_controller.py`) owns it directly instead, applying
+it to every `SonificationState` it publishes, and exposes it back to the Mixer panel
+through plain read-only properties (`master_gain`/`voice_mute`/`voice_solo`) and setters
+rather than a `SessionState` signal. This keeps the same one-directional flow the design
+above was protecting (the Mixer panel still never owns audio truth of its own), just
+through `AudioController` instead of `SessionState` — see that class's own docstring for
+the full reasoning. If a second writer of mixer state is ever added (this document's
+original keyboard-shortcut precedent for `layer_state`, for example), it would need the
+same kind of sync-back signal `layer_state` already has; none exists yet because nothing
+but the Mixer panel currently writes these values.
+
 **Update propagation.** `SessionState` exposes one typed change-notification signal per
-logical slice, matching the table above row for row: a `game_tree`/`current_node`
-signal, a `selection` signal, a `layer_state` signal, a `mixer_state` signal, a
-`freeze_*` signal, a `transport_state` signal, a `camera` signal per canvas instance, and
-a `compare_state` signal — implemented as Qt signals, since PySide6 is already the
+logical slice it actually holds, matching the table above row for row except
+`mixer_state` (see above — owned by `AudioController`, not `SessionState`, so it has no
+`SessionState` signal): a `game_tree`/`current_node` signal, a `selection` signal, a
+`layer_state` signal, a `freeze_*` signal, a `transport_state` signal, a `camera` signal
+per canvas instance, and a `compare_state` signal — implemented as Qt signals, since
+PySide6 is already the
 chosen shell (Part 10). This is deliberately neither one signal per individual field
 (which would fragment into dozens of near-duplicate connections as the state grows) nor
 one monolithic "something changed" signal (which would force every panel to re-render on
@@ -320,7 +463,8 @@ one category not owned by `SessionState` at all — the per-position math result
 | Per-position math fields (Surface, Gradient, Critical Points, Ridge/Valley, Morse-Smale) | Position Cache (Part 4.3) | Populated asynchronously on first visit to a position | Canvas, Inspector |
 | Cross-move correspondence between two cached positions | Correspondence cache (Part 4.5), stored alongside the Position Cache | Computed on first request, memoized | Canvas's animation driver, Compare mode's diffing |
 | Selection / hover | `SessionState.selection` | Board, Canvas | Inspector, Canvas |
-| Layer / voice visibility, solo, mute | `SessionState.layer_state`, `mixer_state` | Canvas's layer strip, mixer strip | Canvas, Layer Registry, Voice Registry, audio engine |
+| Layer visibility, opacity | `SessionState.layer_state` | Canvas's layer strip | Canvas, Layer Registry |
+| Voice mute, solo, master gain | `AudioController` (not `SessionState` — see above) | Mixer panel | `AudioEngine` (via published `SonificationState`) |
 | Transport / freeze | `SessionState.transport_state`, `freeze_*` | Timeline, top bar | Canvas (animation driver), audio engine |
 | Camera | `SessionState.camera[canvas_id]` | Canvas's own zoom/pan handling | Canvas only |
 
@@ -411,7 +555,13 @@ dependency.
 **API changes.** None.
 
 **Effect on future milestones.** 5e ("Timeline & scrubbing") includes branch-point
-rendering and switching, not just a linear slider.
+rendering and switching, not just a linear slider. Branch Exploration V1 formalizes
+`redo()`'s existing behavior as the stated policy: it always follows the child most
+recently made active *for that parent*, by any navigation (play, redo, or a direct
+jump such as a branch badge or the variation selector) — never `.variations` list
+order, and never a multi-way "choose among N" prompt of its own; reaching a non-active
+sibling is always a direct jump, which itself then becomes the new active child going
+forward.
 
 ### 4.5 Stable identity across moves — the correspondence problem
 
@@ -559,6 +709,14 @@ become six `LayerDefinition` registrations in the same dependency order establis
 v1 — board squares/pieces remain outside the registry, since they aren't derived from
 `analysis/` output.
 
+**Source Potential is not one of the six.** `analysis/source_potential.py` and its
+reference plot (`visualization/source_potential_plot.py`) exist, same as every other
+math-derived object, but no `LayerDefinition` registers it and
+`FullPositionAnalysis` doesn't carry its field — this is a deliberate, tracked scope
+gap (interactive milestones 5a–5f registered the other six first), not a mathematical
+defect or a coordinate-fidelity issue. Adding it is future work for whichever milestone
+picks up the next `LayerDefinition`, not implied by anything in this Part.
+
 **Animator is an open strategy, not a closed pair.** Grid lerp and Part 4.5's
 point-correspondence matching are the two built-in implementations needed by the six
 layers that exist today, not an exhaustive list. `animator` is an interface any future
@@ -568,8 +726,15 @@ strategy rather than being forced into "grid" or "point set." No such object exi
 and none is designed here; this is a documentation clarification, not new mechanism.
 
 **Design — Voice Registry (mirrors the Layer Registry).** A `VoiceDefinition` has an
-`id`, `display_name`, mute/solo state, and a contribution to the 4.6 snapshot the audio
-engine reads. The `VoiceRegistry` holds an ordered list of these; the mixer strip (Part
+`id`, `display_name`, and a contribution to the 4.6 snapshot the audio engine reads.
+**As actually implemented (5f), `Voice` (`audio/voices.py`) holds only
+`(voice_id, label, active)` — static metadata, not mute/solo state.** Mute/solo/master
+gain are owned by `AudioController` instead (see Part 4.1's `mixer_state` note above),
+mirroring exactly how `layer_state`'s dynamic visibility/opacity lives on `SessionState`
+while `LayerDefinition` itself stays static-only — the same static-registry /
+dynamic-state split this design always intended, just with the dynamic half owned by
+`AudioController` rather than `SessionState` for the reasons given there. The
+`VoiceRegistry` holds an ordered list of these; the mixer strip (Part
 2, Part 8) and the audio engine both iterate it generically. `docs/audio.md`'s five
 current voices (Harmony, Melody, Accent, Drone, Space) become five initial
 registrations. This registry decides only *how voices are discovered and iterated* — it
@@ -662,7 +827,12 @@ is unchanged since v1 — see `docs/audio.md` directly.
   fractional position, scoped to the mainline path from tree root to `current_node`;
   scrubbing across a branch point follows whichever child is currently active.
 - **Switch branches** — clicking the `↳ branch (n)` indicator at a variation point
-  switches which child is active without discarding the other.
+  switches which child is active without discarding the other. Branch Exploration V1
+  adds a compact "variation X/N" indicator with ◀/▶ buttons, shown only at the branch
+  point currently on screen, stepping through `parent.variations` in place (clamped at
+  both ends, no wrap-around) — a faster path to an adjacent sibling than expanding the
+  badge first. Both affordances are plain `set_current_node` calls; neither is a
+  separate navigation mechanism from clicking any other history entry.
 - **Solo one layer / one voice** — independently-scoped controls sharing an interaction
   convention ("solo hides/mutes everything else in this domain"), not a claim that a
   layer and a voice are the same thing (Review Disposition #16).
@@ -802,7 +972,7 @@ proceeds independently.
 | **5c** — Layer Registry & Voice Registry | Both registries (Part 5) stood up; all six field layers and five audio voices registered and togglable, layers still (non-animated); accessibility overlay toggle | 5a | Registering a seventh dummy layer, or a sixth dummy voice, requires no change to either UI strip |
 | **5d** — Correspondence & animation | Part 4.5's matching module, memoized; move-to-move animation (Part 6) | 5c | Interpolation invariants hold at t=0/t=1; a synthetic two-position pair with a known appearing/disappearing critical point matches correctly; the match is computed once per pair, not per frame |
 | **5e** — Timeline, scrubbing, branches | Continuous scrub; branch-point indicator and switching (4.4) | 5b, 5d | Scrubbing to an exact ply reproduces the same static state as jumping directly; switching branches preserves the non-active line |
-| **5f** — Live audio | Depends on **Milestone 4b**; Part 4.6's snapshot mechanism at the 20ms latency budget; mixer UI built against the Voice Registry | 5e, **4b** | Measured playback position tracks the visual scrub position within the 20ms budget; the concurrency stress test (Part 14) passes; no audible glitches under a stated GPU-load stress test |
+| **5f** — Live audio ✔ **complete (5f.1–5f.6)** | Part 4.6's snapshot mechanism at the 20ms latency budget; finite per-voice articulation (attack/plateau/decay-to-silence, not the originally-scoped always-on sustain); scrub preview (continuous morph, no retrigger); mixer UI built against the Voice Registry (master gain, mute, solo — mute wins over solo). Built entirely on Milestone 4/4a's existing mappings; did **not** end up depending on Milestone 4b (see the implementation status note at the top of this document) | 5e | Measured: mean callback time ~85µs / max ~400µs against the 20ms (20,000µs) budget — comfortably clear; scrub publication is latest-state-only (no backlog, verified by test); repeated ON/OFF + mute/solo + scrub lifecycle stress (100+ cycles) produces no stream/thread leak. Audible-quality legibility (Part 6, principle 9 in `docs/audio.md`) still requires human listening, not re-verified by this table |
 | **5g** — Inspector | Live numeric readouts; selection linking (4.2) | 5c | Every displayed number traces to a specific field in `chess_engine/models.py`, none computed ad hoc in the UI |
 | **5h** — Freeze / solo / compare | Both freeze modes; layer/voice solo; split-screen compare with independent camera | 5d, 5f | Freeze provably stops only rendering/audio, never game state; Compare diff matches a manual diff via the 4.5 correspondence module |
 | **5i** — Keyboard, zoom/pan | Full shortcut set; pan/zoom | 5c | Every mouse interaction has a working keyboard equivalent |

@@ -241,6 +241,46 @@ Everything above was verified objectively: unit and integration tests, FFT spect
 
 ---
 
+# 8. Live Audio Runtime (Milestone 5, Phase 5f)
+
+**Status: implemented and complete (Phases 5f.1–5f.6).** This is the *runtime* delivery of the MVP's six existing signals (Section 7) into a real-time, continuously-playing desktop application — see `docs/interactive_ui.md` for the full architecture and `docs/roadmap.md` for the milestone record. It does **not** add any new mapping: every signal a live note carries traces back to the exact same `build_audio_mapping` this section's offline pipeline already uses. Audio Layer 2's richer mappings (Section 5) remain unimplemented and are unaffected by this section.
+
+**Architecture note — runtime/content decoupling from Milestone 4b.** `docs/interactive_ui.md`'s original design required Phase 5f to depend on Milestone 4b (Audio Layer 2) before live playback could exist at all. In practice, the real-time *runtime* (continuous playback, articulation, scrub preview, mixer) was built entirely on top of the *already-complete* Milestone 4/4a MVP mappings and needed none of 4b's additional content. 4b remains exactly what it always was — Mobility → texture, Source Field → drone, Source Potential → pan, Gradient → melodic contour, Equipotential → chime accents, Dynamics.intensity → rhythm — future work, layered onto the now-working runtime rather than a precondition for it. See `docs/interactive_ui.md` Part 13 and Review Disposition #14 for the corrected dependency record.
+
+## Live articulation
+
+The offline MVP (Section 7) renders one bounded, fixed-duration clip per move (`AudioRenderer`, `apply_envelope` with a short attack/release around a mostly-sustained body). The live runtime is a different problem: one continuously-running audio callback (`audio/engine.py::AudioEngine`) that must go from "one clip, played once" to "many notes, played and silenced in sequence, indefinitely." A first real-time implementation (Phase 5f.2/5f.3) simply retuned two always-on oscillators toward each new move's target pitch/loudness — musically, this read as a continuous siren-like glide with no silence, not as discrete notes.
+
+Phase 5f.4a replaced that with a per-voice **attack → optional plateau → exponential decay-to-silence** envelope (`_ArticulationEnvelope`), retriggered by an explicit `NoteTrigger` on every committed move, independent of the capture/check `AccentTrigger`:
+
+- **Melody** — short attack (12ms), brief plateau (120ms), fast decay (550ms): a foreground, "struck" note.
+- **Harmony** — softer attack (45ms), no plateau, longer decay (1.1s): a receding support voice.
+- **Accent** — unchanged one-shot percussive decay, triggered only for a capture/check.
+- **Drone, Space** — still registered but silent; no synthesis path exists for them (unchanged since the Voice Registry was first stood up).
+
+Pitch snaps immediately to a new move's target in committed/idle mode (no glide — the previous note has already decayed toward silence by the time a normally-paced move arrives, so nothing needs a portamento). A rapid retrigger (a new move before the previous note's envelope finished) ramps its new attack from whatever amplitude the voice is *currently* at, never a hard reset to zero, so no click/discontinuity is introduced. Silence between notes is the default resting state, not an edge case.
+
+## Scrub preview
+
+While a Timeline scrub gesture is active (`AudioController.begin_scrub`/`update_scrub`/`end_scrub`/`cancel_scrub`), Melody and Harmony deliberately keep their original, always-on, continuously-retuned behavior — a single morphing preview voice tracking the drag, with no note retriggering on mouse movement and no capture/check accent firing from a preview alone. Only the position-derived Attack Influence balance → harmony signal actually interpolates continuously; pitch/timbre/loudness are held fixed per segment, identical to a settled move's own values. Releasing a scrub always produces exactly one committed-mode note attack, through the same commit path an ordinary move uses — no special-cased hand-off code exists because none is needed.
+
+## Voice Registry status
+
+`audio/voices.py::build_default_voice_registry()` — five voices, unchanged in shape since first introduced: Harmony, Melody, Accent (`active=True`, real synthesis paths in `AudioEngine`), Drone, Space (`active=False`, no synthesis path anywhere, reserved for Milestone 4b content). The registry itself holds only static `(voice_id, label, active)` metadata — it does not store mute/solo/volume (see Mixer, below); an earlier draft of `docs/interactive_ui.md` described `VoiceDefinition` as carrying mute/solo state directly, which the actual implementation does not do.
+
+## Live Audio Mixer
+
+`desktop_app/audio_mixer_panel.py` — a compact panel iterating the Voice Registry generically (one Mute/Solo row per voice; Drone/Space visible but disabled). Master gain (0–1, linear, no amplification beyond unity) and per-voice mute/solo are owned by `AudioController` (not `SessionState`, and not the panel itself — see that class's own docstring for the reasoning) and applied to every `SonificationState` it publishes, settled or scrub-preview alike. **Mute always wins over solo** for the same voice — a real precedence bug in the original `AudioEngine.audible()` (solo-mode silently ignored mute) was found and fixed while wiring this contract. Audio ON/OFF maps to `AudioEngine.start()`/`stop()` (a real stream pause/resume, not a gain-to-zero hack) — repeated cycling never reopens a device stream and never loses `AudioController`'s own state.
+
+## What remains open
+
+- **Audio Layer 2**'s richer mappings (Mobility, Source Field, Source Potential, Gradient, Equipotential, Dynamics.intensity) — unimplemented, unaffected by the live runtime's completion.
+- **Drone and Space** — registered, silent, no synthesis path; content is Milestone 4b's, not this phase's.
+- **Stereo/pan** — `AudioEngine` remains mono-only by explicit design (Finding #17's Source Potential vs. Ridge/Valley stereo-pan collision is still unresolved and still deferred to whoever scopes Milestone 4b).
+- **Subjective listening validation** — as with the offline MVP (above), the live runtime's own musical quality (does the articulation actually sound good, not just technically finite) has been checked only by generating representative audio and handing it off for listening; the result of that pass is recorded in the Phase 5f.4a/5f.5 implementation reports, not restated here.
+
+---
+
 # Philosophy
 
 The project already transforms

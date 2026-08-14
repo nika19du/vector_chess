@@ -1,9 +1,44 @@
 import threading
 
 import chess
+import chess.pgn
+import pytest
 
 from analysis.attack_influence import build_attack_influence_field
 from desktop_app.position_cache import CacheEntryState, PositionCache
+
+
+@pytest.fixture(autouse=True)
+def _shutdown_every_real_cache_after_each_test():
+    """
+    Stability investigation (see `desktop_app/position_cache.py`'s "Shutdown
+    contract" docstring): this file is exempt from `tests/conftest.py`'s
+    synchronous-executor mitigation specifically so its tests exercise a
+    *real* `ThreadPoolExecutor` -- which means every `PositionCache()`
+    constructed here previously leaked its worker thread for the rest of the
+    pytest session (nothing called `.shutdown()`). Confirmed as a real,
+    residual contributor to the original crash: with a second real-threading
+    file added during this investigation, a full-suite run still crashed at
+    a low rate (1/15) with two idle-but-never-joined worker threads from
+    this file's own earlier tests still alive at the time. Tracking every
+    real instance here and shutting it down at teardown -- purely cleanup,
+    after each test's own assertions have already run -- closes that gap
+    without touching what any test actually verifies.
+    """
+    instances: list[PositionCache] = []
+    original_init = PositionCache.__init__
+
+    def _tracking_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        instances.append(self)
+
+    PositionCache.__init__ = _tracking_init
+    try:
+        yield
+    finally:
+        PositionCache.__init__ = original_init
+        for cache in instances:
+            cache.shutdown()
 
 
 def test_get_on_an_unrequested_position_is_missing():
@@ -68,6 +103,40 @@ def test_cache_key_differs_for_different_positions():
     board_b.push_san("e4")
 
     assert cache.request(board_a) != cache.request(board_b)
+
+
+def test_two_branch_nodes_that_transpose_to_the_same_fen_share_one_cache_entry():
+    """
+    Branch Exploration V1 (approved plan, Section 10): two different
+    GameNode branches -- reached via different move orders -- that transpose
+    to the identical piece placement correctly and intentionally share one
+    PositionCache entry, exactly like two move orders in a single line
+    already do (test_cache_key_is_derived_from_board_fen_not_ply_or_move_count).
+    Documents this as accepted, deliberate behavior for branching, not a bug
+    branching newly introduces -- PositionCache stays FEN-keyed, with no
+    node-identity component, per the approved plan.
+    """
+    cache = PositionCache()
+
+    root = chess.pgn.Game()
+    branch_a = root.add_variation(chess.Move.from_uci("g1f3"))
+    branch_a = branch_a.add_variation(chess.Move.from_uci("g8f6"))
+    branch_a = branch_a.add_variation(chess.Move.from_uci("b1c3"))
+    branch_a = branch_a.add_variation(chess.Move.from_uci("b8c6"))
+
+    branch_b = root.add_variation(chess.Move.from_uci("b1c3"))
+    branch_b = branch_b.add_variation(chess.Move.from_uci("b8c6"))
+    branch_b = branch_b.add_variation(chess.Move.from_uci("g1f3"))
+    branch_b = branch_b.add_variation(chess.Move.from_uci("g8f6"))
+
+    assert branch_a is not branch_b
+    assert branch_a.board().board_fen() == branch_b.board().board_fen()
+
+    fen_a = cache.request(branch_a.board())
+    fen_b = cache.request(branch_b.board())
+
+    assert fen_a == fen_b
+    assert cache.get(fen_a) is cache.get(fen_b)
 
 
 def test_duplicate_requests_do_not_trigger_duplicate_computation(qtbot):

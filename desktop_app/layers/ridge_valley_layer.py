@@ -17,6 +17,7 @@ from visualization.ridge_valley_plot import (
     ACCEPTED_ALPHA,
     MIN_POINTS_TO_DRAW,
     RIDGE_LINE_COLOR,
+    RIDGE_VALLEY_LINEWIDTH,
     VALLEY_LINE_COLOR,
 )
 
@@ -160,7 +161,14 @@ def render_ridge_valley_frame(frame: RidgeValleyFrame) -> list[LayerGeometry]:
         positions = plot_to_ndc(np.array(plot_positions, dtype=np.float32))
         colors = np.array(vertex_colors, dtype=np.float32)
 
-    return [LayerGeometry(positions=positions, colors=colors, primitive=GL.GL_LINES)]
+    # V2 (visual hierarchy): matches visualization/ridge_valley_plot.py's own
+    # RIDGE_VALLEY_LINEWIDTH -- the reference's "strong structural lines"
+    # weight, only chains accepted at quality-filter time ever reach here
+    # (see build_ridge_valley_frame's docstring), so REJECTED_LINEWIDTH is
+    # never relevant to what actually gets drawn.
+    return [
+        LayerGeometry(positions=positions, colors=colors, primitive=GL.GL_LINES, line_width=RIDGE_VALLEY_LINEWIDTH)
+    ]
 
 
 RIDGE_VALLEY_LAYER = LayerDefinition(

@@ -9,16 +9,32 @@ from desktop_app.correspondence import CriticalPointCorrespondence
 from desktop_app.gl_canvas import LayerGeometry
 from desktop_app.layer_registry import LayerDefinition
 from desktop_app.layers._color_scale import hex_to_rgba
+from desktop_app.layers._critical_point_glyphs import (
+    cross_line_segments,
+    ring_line_segments,
+    triangle_down_vertices,
+    triangle_up_vertices,
+)
 from desktop_app.layers._lerp import lerp
 from desktop_app.layers._ndc import plot_to_ndc
 from desktop_app.position_cache import CacheEntry
-from visualization.critical_points_plot import MARKER_SPECS
+from visualization.critical_points_plot import MARKER_LINEWIDTH, MARKER_SPECS
 
-# Half-width, in plot-space units (one board cell == 1.0), of the small
-# colored quad standing in for matplotlib's per-classification glyph
-# (triangle/inverted-triangle/x/circle). Classification stays fully legible
-# by color -- the load-bearing channel; exact glyph shape is decoration this
-# phase doesn't build (see the plan's rendering-simplifications note).
+# Half-width (or radius, for the degenerate ring), in plot-space units (one
+# board cell == 1.0), of each classification's glyph.
+#
+# Compared against the reference's actual rendered footprint rather than
+# picked arbitrarily: critical_points_plot.py's figure is figsize=(10, 10)
+# at matplotlib's default 100 DPI (no dpi= override anywhere in
+# visualization/*.py) -- a 1000x1000px figure over an 8-cell plot domain,
+# so roughly 100-125px/cell once axis margins are accounted for.
+# MARKER_SIZE=220 is scatter's area in points^2, so the marker's linear
+# size is sqrt(220) ~= 14.8pt * (100/72)px/pt ~= 20.6px -- about 17-21% of
+# one cell. This value's full extent (2 * MARKER_HALF_SIZE = 0.24 cells,
+# i.e. 24% of a cell) is the same order of magnitude, not an arbitrary
+# choice -- kept unchanged from the pre-V3 quad marker's own size rather
+# than enlarged, since the comparison shows the existing footprint is
+# already visually equivalent.
 MARKER_HALF_SIZE = 0.12
 
 
@@ -26,6 +42,12 @@ MARKER_HALF_SIZE = 0.12
 class CriticalPointMarker:
     xy: tuple[float, float]  # plot space
     color: tuple[float, float, float, float]
+    # V3: which glyph shape to draw -- one of MARKER_SPECS's four keys
+    # ("maximum"/"minimum"/"saddle"/"degenerate"). Classification is never
+    # inferred from color; it's carried through explicitly from
+    # ClassifiedCriticalPoint.classification at every point this dataclass
+    # is constructed, the same source of truth the color already comes from.
+    classification: str
 
 
 @dataclass(frozen=True)
@@ -55,7 +77,7 @@ def build_critical_points_frame(entry: CacheEntry) -> CriticalPointsFrame:
         if color is None:
             continue  # "unclassified" never appears in an accepted assessment
 
-        markers.append(CriticalPointMarker(xy=(point.x, point.y), color=color))
+        markers.append(CriticalPointMarker(xy=(point.x, point.y), color=color, classification=point.classification))
 
     return CriticalPointsFrame(markers=markers)
 
@@ -85,12 +107,16 @@ def interpolate_critical_points_frame(correspondence: CriticalPointCorrespondenc
     markers: list[CriticalPointMarker] = []
 
     for match in correspondence.matched:
+        # Matched pairs are guaranteed the same classification
+        # (desktop_app/correspondence.py's own matching constraint) -- using
+        # match.current's here is consistent with color already doing the
+        # same, not a new assumption.
         color = _marker_color(match.current)
         if color is None:
             continue
         x = lerp(match.previous.x, match.current.x, t)
         y = lerp(match.previous.y, match.current.y, t)
-        markers.append(CriticalPointMarker(xy=(x, y), color=color))
+        markers.append(CriticalPointMarker(xy=(x, y), color=color, classification=match.current.classification))
 
     if t < 1.0:
         fade_out = lerp(1.0, 0.0, t)
@@ -99,7 +125,7 @@ def interpolate_critical_points_frame(correspondence: CriticalPointCorrespondenc
             if base_color is None:
                 continue
             color = (base_color[0], base_color[1], base_color[2], base_color[3] * fade_out)
-            markers.append(CriticalPointMarker(xy=(point.x, point.y), color=color))
+            markers.append(CriticalPointMarker(xy=(point.x, point.y), color=color, classification=point.classification))
 
     if t > 0.0:
         fade_in = lerp(0.0, 1.0, t)
@@ -108,36 +134,75 @@ def interpolate_critical_points_frame(correspondence: CriticalPointCorrespondenc
             if base_color is None:
                 continue
             color = (base_color[0], base_color[1], base_color[2], base_color[3] * fade_in)
-            markers.append(CriticalPointMarker(xy=(point.x, point.y), color=color))
+            markers.append(CriticalPointMarker(xy=(point.x, point.y), color=color, classification=point.classification))
 
     return CriticalPointsFrame(markers=markers)
 
 
 def render_critical_points_frame(frame: CriticalPointsFrame) -> list[LayerGeometry]:
-    if not frame.markers:
-        positions = np.zeros((0, 2), dtype=np.float32)
-        colors = np.zeros((0, 4), dtype=np.float32)
-        return [LayerGeometry(positions=positions, colors=colors, primitive=GL.GL_TRIANGLES)]
+    """
+    Two geometries, two primitives -- the same "fill + line" pattern
+    morse_smale_layer.py already established, not a new renderer mechanism:
+    maximum/minimum are solid filled triangles (GL_TRIANGLES), saddle's X
+    and degenerate's hollow ring are outline-only (GL_LINES), matching the
+    reference's own filled-marker vs hollow-marker distinction
+    (MARKER_SPECS's facecolor "none" for degenerate, and 'x' being an
+    unfilled line marker in matplotlib too -- see UNFILLED_LINE_MARKERS in
+    visualization/critical_points_plot.py).
+    """
+    triangle_positions: list[tuple[float, float]] = []
+    triangle_colors: list[tuple[float, float, float, float]] = []
+    line_positions: list[tuple[float, float]] = []
+    line_colors: list[tuple[float, float, float, float]] = []
 
-    plot_positions: list[tuple[float, float]] = []
-    vertex_colors: list[tuple[float, float, float, float]] = []
     for marker in frame.markers:
         x, y = marker.xy
         half = MARKER_HALF_SIZE
-        quad = (
-            (x - half, y - half),
-            (x + half, y - half),
-            (x + half, y + half),
-            (x - half, y - half),
-            (x + half, y + half),
-            (x - half, y + half),
-        )
-        plot_positions.extend(quad)
-        vertex_colors.extend([marker.color] * 6)
 
-    positions = plot_to_ndc(np.array(plot_positions, dtype=np.float32))
-    colors = np.array(vertex_colors, dtype=np.float32)
-    return [LayerGeometry(positions=positions, colors=colors, primitive=GL.GL_TRIANGLES)]
+        if marker.classification == "maximum":
+            triangle_positions.extend(triangle_up_vertices(x, y, half))
+            triangle_colors.extend([marker.color] * 3)
+        elif marker.classification == "minimum":
+            triangle_positions.extend(triangle_down_vertices(x, y, half))
+            triangle_colors.extend([marker.color] * 3)
+        elif marker.classification == "saddle":
+            segments = cross_line_segments(x, y, half)
+            line_positions.extend(segments)
+            line_colors.extend([marker.color] * len(segments))
+        elif marker.classification == "degenerate":
+            segments = ring_line_segments(x, y, half)
+            line_positions.extend(segments)
+            line_colors.extend([marker.color] * len(segments))
+
+    if triangle_positions:
+        triangle_geometry = LayerGeometry(
+            positions=plot_to_ndc(np.array(triangle_positions, dtype=np.float32)),
+            colors=np.array(triangle_colors, dtype=np.float32),
+            primitive=GL.GL_TRIANGLES,
+        )
+    else:
+        triangle_geometry = LayerGeometry(
+            positions=np.zeros((0, 2), dtype=np.float32),
+            colors=np.zeros((0, 4), dtype=np.float32),
+            primitive=GL.GL_TRIANGLES,
+        )
+
+    if line_positions:
+        line_geometry = LayerGeometry(
+            positions=plot_to_ndc(np.array(line_positions, dtype=np.float32)),
+            colors=np.array(line_colors, dtype=np.float32),
+            primitive=GL.GL_LINES,
+            line_width=MARKER_LINEWIDTH,
+        )
+    else:
+        line_geometry = LayerGeometry(
+            positions=np.zeros((0, 2), dtype=np.float32),
+            colors=np.zeros((0, 4), dtype=np.float32),
+            primitive=GL.GL_LINES,
+            line_width=MARKER_LINEWIDTH,
+        )
+
+    return [triangle_geometry, line_geometry]
 
 
 CRITICAL_POINTS_LAYER = LayerDefinition(

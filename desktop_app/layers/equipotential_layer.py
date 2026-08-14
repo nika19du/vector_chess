@@ -6,12 +6,23 @@ import numpy as np
 from matplotlib.figure import Figure
 from OpenGL import GL
 
-from desktop_app.gl_canvas import LayerGeometry
+from desktop_app.gl_canvas import MIN_GL_LINE_WIDTH, LayerGeometry
 from desktop_app.layer_registry import LayerDefinition
 from desktop_app.layers._color_scale import hex_to_rgba, symmetric_max_abs
 from desktop_app.layers._ndc import plot_to_ndc
 from desktop_app.position_cache import CacheEntry
-from visualization.equipotential_plot import CONTOUR_LEVEL_COUNT, CONTOUR_LINE_ALPHA, CONTOUR_LINE_COLOR
+from visualization.equipotential_plot import (
+    CONTOUR_LEVEL_COUNT,
+    CONTOUR_LINE_ALPHA,
+    CONTOUR_LINE_COLOR,
+    CONTOUR_LINE_WIDTH,
+)
+
+# V2 (visual hierarchy): the reference's own contour linewidth (0.7) is
+# below every OpenGL implementation's real minimum (MIN_GL_LINE_WIDTH) --
+# clamped up to that floor rather than requesting an unreachable value, so
+# Equipotential still renders as the thinnest of the line-based layers.
+RENDER_LINE_WIDTH = max(MIN_GL_LINE_WIDTH, CONTOUR_LINE_WIDTH)
 
 
 @dataclass(frozen=True)
@@ -68,7 +79,7 @@ def render_equipotential_frame(frame: EquipotentialFrame) -> list[LayerGeometry]
         positions = plot_to_ndc(plot_positions)
         colors = np.array([frame.color] * len(plot_positions), dtype=np.float32)
 
-    return [LayerGeometry(positions=positions, colors=colors, primitive=GL.GL_LINES)]
+    return [LayerGeometry(positions=positions, colors=colors, primitive=GL.GL_LINES, line_width=RENDER_LINE_WIDTH)]
 
 
 EQUIPOTENTIAL_LAYER = LayerDefinition(

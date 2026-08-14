@@ -2,6 +2,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from audio.phrase import PhraseDescription
+
 
 @dataclass(frozen=True)
 class AudioMapping:
@@ -32,6 +34,16 @@ class AudioMapping:
 
     dynamics_label: str | None  # None only on the first move
     loudness: float  # dynamics_label -> master gain, 0..1
+
+    # Audio Layer 2 -- Rhythmic Layer, v2 (see audio/phrase.py):
+    # dynamics_intensity -> pulse_density, 0..1 -- kept here purely for
+    # traceability/testing (same convention as attack_influence_balance
+    # above), not read by AudioEngine directly. `phrase` is the actual
+    # deterministic, finite rhythmic description AudioEngine consumes --
+    # a bounded sequence of events built entirely on this thread, never
+    # recomputed inside the real-time callback.
+    pulse_density: float
+    phrase: PhraseDescription
 
 
 @dataclass(frozen=True)
