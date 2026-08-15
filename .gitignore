@@ -13,3 +13,12 @@
 # Python cache
 __pycache__/
 *.py[cod]
+
+# Claude Code local instructions
+CLAUDE.md
+
+# Claude local settings
+.claude/
+
+# Generated audio experiments
+experiments/**/output/
