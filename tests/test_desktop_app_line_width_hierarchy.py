@@ -24,7 +24,11 @@ from desktop_app.layers.equipotential_layer import build_equipotential_frame, re
 from desktop_app.layers.gradient_layer import _GRADIENT_LINEWIDTH_BASE as GRADIENT_LINE_WIDTH
 from desktop_app.layers.gradient_layer import build_gradient_frame, render_gradient_frame
 from desktop_app.layers.morse_smale_layer import build_morse_smale_frame, render_morse_smale_frame
-from desktop_app.layers.ridge_valley_layer import build_ridge_valley_frame, render_ridge_valley_frame
+from desktop_app.layers.ridge_valley_layer import (
+    PROMINENT_CHAIN_LINEWIDTH_SCALE,
+    build_ridge_valley_frame,
+    render_ridge_valley_frame,
+)
 from desktop_app.main_window import _LAYERS_IN_DRAW_ORDER
 from desktop_app.position_cache import CacheEntry, CacheEntryState
 from visualization.equipotential_plot import CONTOUR_LINE_WIDTH
@@ -64,13 +68,21 @@ def test_equipotential_geometry_line_width_is_clamped_reference_width():
 
 
 def test_ridge_valley_geometry_line_width_matches_the_reference_constant():
+    # Milestone C: a position with at least one chain anchored at the
+    # position's strongest critical point now legitimately renders TWO
+    # geometries (normal-weight batch + prominent-weight batch, see
+    # render_ridge_valley_frame's own docstring) instead of always one --
+    # the first (normal-weight) geometry must still carry exactly the
+    # unmodified reference constant.
     entry = _entry_for(_midgame_board())
     frame = build_ridge_valley_frame(entry)
     assert frame.chains, "expected at least one accepted ridge/valley chain on this position"
 
     geometries = render_ridge_valley_frame(frame)
-    assert len(geometries) == 1
+    assert len(geometries) in (1, 2)
     assert geometries[0].line_width == RIDGE_VALLEY_LINEWIDTH
+    if len(geometries) == 2:
+        assert geometries[1].line_width == pytest.approx(RIDGE_VALLEY_LINEWIDTH * PROMINENT_CHAIN_LINEWIDTH_SCALE)
 
 
 def test_morse_smale_boundary_line_width_matches_the_reference_constant():
@@ -157,20 +169,30 @@ def test_ridge_valley_positions_are_unaffected_by_the_line_width_change():
     """Same "real, untouched coordinates" property test_desktop_app_layers.py
     already asserts -- re-checked here since this milestone touched this
     exact renderer function, to prove line_width is additive metadata, not a
-    coordinate-affecting change."""
+    coordinate-affecting change. Milestone C: chains may now split across
+    two geometries (normal/prominent), so the total vertex count is summed
+    across whichever geometries were actually returned."""
     entry = _entry_for(_midgame_board())
     frame = build_ridge_valley_frame(entry)
     expected_point_sets = [chain.points_xy for chain in frame.chains]
 
     geometries = render_ridge_valley_frame(frame)
     expected_vertex_count = sum(2 * (len(points) - 1) for points in expected_point_sets)
-    assert geometries[0].positions.shape == (expected_vertex_count, 2)
+    total_vertex_count = sum(geometry.positions.shape[0] for geometry in geometries)
+    assert total_vertex_count == expected_vertex_count
+    for geometry in geometries:
+        assert geometry.positions.shape[1] == 2
 
 
 def test_draw_order_is_unchanged_attack_influence_first_critical_points_last():
+    """Milestone F: Source Potential is inserted second (right after Attack
+    Influence, before every line/marker layer) -- two translucent whole-grid
+    field fills stack together underneath the topology/marker layers, rather
+    than a field fill drawn on top of Critical Points' glyphs."""
     layer_ids = [layer.id for layer in _LAYERS_IN_DRAW_ORDER]
     assert layer_ids == [
         "attack_influence",
+        "source_potential",
         "equipotential",
         "gradient",
         "ridge_valley",

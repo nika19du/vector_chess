@@ -18,7 +18,7 @@ from desktop_app.layers._critical_point_glyphs import (
 from desktop_app.layers._lerp import lerp
 from desktop_app.layers._ndc import plot_to_ndc
 from desktop_app.position_cache import CacheEntry
-from visualization.critical_points_plot import MARKER_LINEWIDTH, MARKER_SPECS
+from visualization.critical_points_plot import MARKER_LINEWIDTH, MARKER_SPECS, strongest_critical_point
 
 # Half-width (or radius, for the degenerate ring), in plot-space units (one
 # board cell == 1.0), of each classification's glyph.
@@ -37,6 +37,18 @@ from visualization.critical_points_plot import MARKER_LINEWIDTH, MARKER_SPECS
 # already visually equivalent.
 MARKER_HALF_SIZE = 0.12
 
+# Milestone C (VECTORCHESS_MODEL_V2_INTEGRATION_AUDIT.md;
+# Experiment 007 REPORT.md): the ONE visual cue for "structurally
+# strongest critical point in this position" -- a modest linear size
+# increase, chosen over opacity/halo/color because it touches no color
+# logic (theme-safe by construction), needs no extra draw call here (the
+# same triangle/line vertex generators already take a half-width
+# parameter), and lerps exactly like position/alpha already do. 1.35x
+# linear size (matplotlib's matching PROMINENT_MARKER_SIZE in
+# visualization/critical_points_plot.py scales AREA by 1.35**2 for the
+# same visual effect in that renderer's units).
+PROMINENT_MARKER_SCALE = 1.35
+
 
 @dataclass(frozen=True)
 class CriticalPointMarker:
@@ -48,6 +60,13 @@ class CriticalPointMarker:
     # ClassifiedCriticalPoint.classification at every point this dataclass
     # is constructed, the same source of truth the color already comes from.
     classification: str
+    # Milestone C: 0.0..1.0, continuous rather than boolean so a
+    # transition/scrub frame can lerp it exactly like xy/alpha already are
+    # -- 1.0 means "render at PROMINENT_MARKER_SCALE", 0.0 means "render at
+    # the normal MARKER_HALF_SIZE". Never recomputed from an interpolated
+    # (lerped) intermediate position -- always derived from one of the two
+    # real, analyzed endpoints (see interpolate_critical_points_frame).
+    prominence: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -67,17 +86,29 @@ def build_critical_points_frame(entry: CacheEntry) -> CriticalPointsFrame:
     if entry.analysis is None:
         raise ValueError("cache entry is not READY: no analysis")
 
-    markers: list[CriticalPointMarker] = []
-    for assessment in entry.analysis.critical_point_assessments:
-        if not assessment.is_accepted:
-            continue
+    accepted_points = [
+        assessment.point for assessment in entry.analysis.critical_point_assessments if assessment.is_accepted
+    ]
+    # Milestone C: ranked over the SAME accepted set this function already
+    # builds markers from -- one canonical helper (visualization.
+    # critical_points_plot.strongest_critical_point), not a re-derived
+    # scoring function.
+    strongest = strongest_critical_point(accepted_points)
 
-        point = assessment.point
+    markers: list[CriticalPointMarker] = []
+    for point in accepted_points:
         color = _marker_color(point)
         if color is None:
             continue  # "unclassified" never appears in an accepted assessment
 
-        markers.append(CriticalPointMarker(xy=(point.x, point.y), color=color, classification=point.classification))
+        markers.append(
+            CriticalPointMarker(
+                xy=(point.x, point.y),
+                color=color,
+                classification=point.classification,
+                prominence=1.0 if point is strongest else 0.0,
+            )
+        )
 
     return CriticalPointsFrame(markers=markers)
 
@@ -116,7 +147,21 @@ def interpolate_critical_points_frame(correspondence: CriticalPointCorrespondenc
             continue
         x = lerp(match.previous.x, match.current.x, t)
         y = lerp(match.previous.y, match.current.y, t)
-        markers.append(CriticalPointMarker(xy=(x, y), color=color, classification=match.current.classification))
+        # Milestone C: prominence is looked up against the two REAL,
+        # already-analyzed endpoints (correspondence.strongest_previous/
+        # strongest_current, computed once in desktop_app/correspondence.py)
+        # and lerped exactly like xy/alpha already are -- never re-ranked
+        # from this frame's own lerped (x, y), which would not correspond
+        # to any actual reconstructed surface and could flicker between
+        # points frame to frame.
+        prominence_previous = 1.0 if match.previous is correspondence.strongest_previous else 0.0
+        prominence_current = 1.0 if match.current is correspondence.strongest_current else 0.0
+        prominence = lerp(prominence_previous, prominence_current, t)
+        markers.append(
+            CriticalPointMarker(
+                xy=(x, y), color=color, classification=match.current.classification, prominence=prominence
+            )
+        )
 
     if t < 1.0:
         fade_out = lerp(1.0, 0.0, t)
@@ -125,7 +170,12 @@ def interpolate_critical_points_frame(correspondence: CriticalPointCorrespondenc
             if base_color is None:
                 continue
             color = (base_color[0], base_color[1], base_color[2], base_color[3] * fade_out)
-            markers.append(CriticalPointMarker(xy=(point.x, point.y), color=color, classification=point.classification))
+            prominence = 1.0 if point is correspondence.strongest_previous else 0.0
+            markers.append(
+                CriticalPointMarker(
+                    xy=(point.x, point.y), color=color, classification=point.classification, prominence=prominence
+                )
+            )
 
     if t > 0.0:
         fade_in = lerp(0.0, 1.0, t)
@@ -134,7 +184,12 @@ def interpolate_critical_points_frame(correspondence: CriticalPointCorrespondenc
             if base_color is None:
                 continue
             color = (base_color[0], base_color[1], base_color[2], base_color[3] * fade_in)
-            markers.append(CriticalPointMarker(xy=(point.x, point.y), color=color, classification=point.classification))
+            prominence = 1.0 if point is correspondence.strongest_current else 0.0
+            markers.append(
+                CriticalPointMarker(
+                    xy=(point.x, point.y), color=color, classification=point.classification, prominence=prominence
+                )
+            )
 
     return CriticalPointsFrame(markers=markers)
 
@@ -155,9 +210,14 @@ def render_critical_points_frame(frame: CriticalPointsFrame) -> list[LayerGeomet
     line_positions: list[tuple[float, float]] = []
     line_colors: list[tuple[float, float, float, float]] = []
 
-    for marker in frame.markers:
+    # Milestone C: ascending prominence order so a genuinely prominent
+    # marker is appended -- and therefore drawn -- last within its own
+    # primitive batch, a free way to keep it on top if two glyphs of the
+    # same primitive type ever overlap at typical board zoom. No new draw
+    # call: same two batched geometries as before.
+    for marker in sorted(frame.markers, key=lambda marker: marker.prominence):
         x, y = marker.xy
-        half = MARKER_HALF_SIZE
+        half = lerp(MARKER_HALF_SIZE, MARKER_HALF_SIZE * PROMINENT_MARKER_SCALE, marker.prominence)
 
         if marker.classification == "maximum":
             triangle_positions.extend(triangle_up_vertices(x, y, half))
@@ -210,4 +270,6 @@ CRITICAL_POINTS_LAYER = LayerDefinition(
     display_name="Critical Points",
     data_source=build_critical_points_frame,
     renderer=render_critical_points_frame,
+    category="Topology",
+    short_caption="Local peaks, dips, and saddle points of the reconstructed influence surface.",
 )

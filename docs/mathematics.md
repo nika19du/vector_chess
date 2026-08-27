@@ -7,6 +7,31 @@ but to explain the intuition behind every concept.
 
 ---
 
+# 0. What a "field" is, and why there is more than one landscape
+
+Every object below is built from a **selected observable** of the position — occupancy,
+attack influence, or a derivative of one of those — turned into a discrete 8×8 field, then,
+from Section 6 onward, reconstructed into a continuous surface by an explicit, parameterized
+method (Gaussian smoothing plus a spline fit, or kernel summation, depending on the
+observable). Changing the observable, or changing the reconstruction method's parameters,
+produces a **different, equally valid** landscape of the *same* position — not an error, and
+not evidence that any one landscape is arbitrary, just a reminder that "the chess landscape"
+is shorthand for "a landscape, built from this observable, by this method":
+
+```
+chess position -> selected observable -> discrete field F -> reconstruction R_theta(F) -> one landscape
+```
+
+`VECTORCHESS_MATHEMATICAL_MODEL_V2.md` (`experiments/geometric_move_prediction/`) works this
+out in full, including which objects below turn out to be stable across reasonable
+reconstruction choices and which do not. Sections 9–11 below already establish one axis of
+caution ("mathematically real on the fitted surface does not make an object chess-meaningful
+— see Section 9"); the Model v2 document adds a second, complementary axis — *reconstruction-
+stable* vs. *reconstruction-sensitive* — measured empirically rather than assumed, and this
+document points to it at the relevant sections rather than repeating it here.
+
+---
+
 # 1. Mobility
 
 ## Meaning
@@ -251,6 +276,22 @@ Both were observed directly: Phase 2's localization tests documented spline ring
 
 This is why localization and classification (`locate_critical_points`, `classify_critical_points`) are kept strictly separate from a further quality-assessment step (`analysis/critical_point_quality.py`, `assess_critical_point_quality`): the math never lies about what the fitted surface does, and quality assessment never rewrites that math — it only adds an explicit, documented, always-inspectable judgment about which of the mathematically real critical points are trustworthy enough to present as chess-meaningful. A rejected point is not deleted or hidden from the data; it is retained with its reason recorded, exactly per this project's own "prefer explainability over complexity" principle.
 
+## Reconstruction stability is not uniform across detected points
+
+A separate question from chess-meaningfulness above is *reconstruction* stability: would the
+same point still be found, in the same place, with the same classification, under a
+different but equally reasonable choice of smoothing? Experiment 007 tested this directly
+and found the answer is not uniform across a position's detected points: the single
+strongest critical point (by combined curvature magnitude) was substantially more likely to
+survive a real, tested change in smoothing than weaker, lower-ranked points, whose
+reconstruction stability fell off quickly beyond it. This is a statement about *how much a
+detected point's location and classification move when the reconstruction settings change*
+— it is not a claim that the strongest point is thereby established as chess-significant;
+that remains exactly the open question the section above already describes. The specific
+figures and methodology are recorded in `VECTORCHESS_MATHEMATICAL_MODEL_V2.md`, not restated
+here, since they are experiment-specific measurements on a pilot dataset, not general
+constants.
+
 ---
 
 # 10. Ridge and Valley Analysis
@@ -335,6 +376,17 @@ Where Section 9's maxima and minima answer "where is the single sharpest concent
 
 The same caution Section 9 documents (lines above, "A spline critical point is mathematically real — that does not make it chess-meaningful") applies here, at the level of a whole chain rather than a single point: a chain traced mostly within the boundary margin of the fitted spline's domain, or one whose cross-sectional curvature stays only barely on the required side of zero throughout, is more likely a fitting artifact than real chess structure. This motivates a chain-level quality filter analogous to `analysis/critical_point_quality.py`, checked once the chain is fully traced rather than point by point.
 
+## Reconstruction stability is inherited from the anchor
+
+A ridge or valley chain is only as reconstruction-stable as the critical point it was traced
+from (Section 9's note above) — a chain is seeded at, and therefore inherits, whatever degree
+of reconstruction stability its anchor point has, with no independent stability of its own
+beyond that. A chain anchored at a comparatively stable point should be read with
+comparatively more confidence than one anchored at a weak, low-ranked point. Measured
+directly in Experiment 007, recorded in `VECTORCHESS_MATHEMATICAL_MODEL_V2.md`: ridge/valley
+chains as a group turned out to be about as reconstruction-sensitive as the critical points
+that anchor them — neither noticeably more fragile nor more robust on their own account.
+
 ## Reference case for testing
 
 An anisotropic (unequal `sigma_x`, `sigma_y`) Gaussian bump, axis-aligned by construction — an 8×8 matrix built from a Gaussian stretched along one board axis. Its ridge is the closed-form straight line running along the long axis through the peak, with eigenvectors aligned to the coordinate axes by construction (avoiding the need to hand-verify the rotated closed form for a first correctness pass) and analytically known cross-sectional curvature everywhere along it. This is the case implementation should validate the eigenvector formula and the tracer against before ever touching a real chess position — the same role the single centered Gaussian bump played for Section 9.
@@ -391,6 +443,20 @@ The textbook "egg-crate" Morse function `f(x, y) = amplitude · cos(x) · cos(y)
 
 Unlike Sections 9 and 10, this document does not yet propose a chess-semantic reading of a Morse-Smale cell (a "basin of local balance," a coordinated pocket of one side's dominance, or similar) as even a working hypothesis. The visualization (`visualization/morse_smale_plot.py`) and one real-position smoke render exist and are readable, but no validation plan comparable to Section 10's file/diagonal cross-checks has been designed or run. Any chess interpretation of cell shape, area, or count should be treated as entirely open until a future milestone proposes and validates one explicitly — consistent with this project's rule that a mathematically real object is not automatically a chess-meaningful one.
 
+## Reconstruction stability — now measured, and low
+
+Beyond the open chess-semantic question above, Experiment 007 directly measured how much the
+assembled complex changes under a real, tested change in reconstruction settings, and found
+it changes substantially more than the critical points and ridge/valley chains it is built
+from — consistent with cell assembly depending on every accepted saddle's separatrices at
+once, so a small upstream change can restructure many cells together. Concretely, this
+project currently treats the Morse-Smale complex as an **exploratory, educational, and
+visual/generative** layer — a legitimate and interesting shape to look at, trace, and (per
+`docs/interactive_ui.md` Part 12's Generative Music Engine sketch) even make music from —
+rather than as a demonstrated, stable topology of the position. That framing may change if a
+future milestone finds a genuinely stable sub-structure within it; nothing here forecloses
+that, and the full measurement is in `VECTORCHESS_MATHEMATICAL_MODEL_V2.md`.
+
 ## Data model
 
 New dataclasses in `chess_engine/models.py`, following the existing `CriticalPointCandidate`/`RidgeValleyChain` shape and naming convention:
@@ -401,6 +467,28 @@ New dataclasses in `chess_engine/models.py`, following the existing `CriticalPoi
 - **`MorseSmaleComplex`** — the full result: vertices, edges (separatrices), cells, any half-edges left over from an abandoned trace, and topology issues.
 - **`MorseSmaleCellGeometry`** — derived-only (polygon, area, centroid, perimeter), computed by `compute_cell_geometry`, never stored on a cell.
 - **`MorseSmaleCellRejectionReasonKind`** / **`MorseSmaleCellRejectionReason`** / **`MorseSmaleCellQualityAssessment`** — the quality layer, mirroring `CriticalPointQualityAssessment` in shape.
+
+---
+
+# 12. The information hierarchy at a glance
+
+Every section above sits at a specific point in one chain, and later stages inherit every
+assumption the earlier ones made:
+
+```
+chess state -> observables (Sections 1-5) -> discrete fields -> reconstruction R_theta
+  (Section 6) -> gradient / Hessian (Sections 7-9) -> critical points (Section 9)
+  -> ridge / valley (Section 10) -> Morse-Smale (Section 11)
+```
+
+A later stage cannot be more reliable than the stage it was built from — Section 9's own
+"mathematically real, not automatically chess-meaningful" caution therefore applies at least
+as strongly to Sections 10 and 11, which are built *from* Section 9's output, and the
+reconstruction-stability notes added to Sections 9–11 above follow the same chain: dominant
+critical points hold up comparatively well, ridge/valley chains inherit their anchor's
+standing, and the Morse-Smale complex — built from all of it at once — is the least stable of
+the three. The full evidence behind this ordering comes from Experiment 007 and is worked
+out in `VECTORCHESS_MATHEMATICAL_MODEL_V2.md`, not repeated here.
 
 ---
 

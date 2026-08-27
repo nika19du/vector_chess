@@ -52,6 +52,44 @@ def test_checkbox_labels_use_the_registry_display_name(qapp):
         assert panel._checkboxes[layer.id].text() == layer.display_name
 
 
+# ---------------------------------------------------------
+# Milestone B (VECTORCHESS_MODEL_V2_INTEGRATION_AUDIT.md Sec. 5, 11):
+# metadata surfaces as a tooltip on the existing checkbox -- no new widget,
+# no layout change.
+# ---------------------------------------------------------
+
+
+def test_checkbox_tooltip_matches_its_own_layers_category_and_caption(qapp):
+    panel, _ = _panel(qapp)
+
+    for layer in ALL_SIX_LAYERS:
+        assert panel._checkboxes[layer.id].toolTip() == f"{layer.category}: {layer.short_caption}"
+
+
+def test_tooltips_are_not_cross_wired_between_layers(qapp):
+    panel, _ = _panel(qapp)
+
+    tooltips_by_id = {layer_id: checkbox.toolTip() for layer_id, checkbox in panel._checkboxes.items()}
+    assert len(set(tooltips_by_id.values())) == len(ALL_SIX_LAYERS)
+
+
+def test_a_layer_with_no_metadata_gets_no_tooltip(qapp):
+    # A bare LayerDefinition (category="", short_caption="") -- e.g. a
+    # future layer that hasn't been given metadata yet -- must not render a
+    # malformed ": " tooltip.
+    future_layer = LayerDefinition(
+        id="temporal_derivative",
+        display_name="Temporal Derivative",
+        data_source=lambda entry: entry,
+        renderer=lambda frame: frame,
+    )
+    registry = _registry(ALL_SIX_LAYERS + (future_layer,))
+
+    panel, _ = _panel(qapp, registry)
+
+    assert panel._checkboxes["temporal_derivative"].toolTip() == ""
+
+
 def test_registering_a_seventh_layer_requires_no_change_to_layer_panel(qapp):
     # Directly exercises Part 12's extensibility claim against this widget:
     # a brand-new LayerDefinition gets a row with no LayerPanel code change.
@@ -174,6 +212,66 @@ def test_external_session_state_opacity_change_updates_the_slider(qapp):
     session_state.set_layer_opacity("critical_points", 0.25)
 
     assert panel._sliders["critical_points"].value() == 25
+
+
+# ---------------------------------------------------------
+# Milestone F: Source Potential's row exercises the same generic mechanism
+# ---------------------------------------------------------
+
+
+def test_source_potential_row_has_tooltip_from_category_and_caption(qapp):
+    from desktop_app.layers.source_potential_layer import SOURCE_POTENTIAL_LAYER
+
+    registry = _registry(ALL_SIX_LAYERS + (SOURCE_POTENTIAL_LAYER,))
+    panel, _ = _panel(qapp, registry)
+
+    assert panel._checkboxes["source_potential"].text() == "Source Potential"
+    assert (
+        panel._checkboxes["source_potential"].toolTip()
+        == f"{SOURCE_POTENTIAL_LAYER.category}: {SOURCE_POTENTIAL_LAYER.short_caption}"
+    )
+
+
+def test_source_potential_starts_unchecked(qapp):
+    from desktop_app.layers.source_potential_layer import SOURCE_POTENTIAL_LAYER
+
+    registry = _registry(ALL_SIX_LAYERS + (SOURCE_POTENTIAL_LAYER,))
+    panel, session_state = _panel(qapp, registry)
+
+    assert panel._checkboxes["source_potential"].isChecked() is False
+    assert session_state.layer_visible("source_potential") is False
+
+
+def test_toggling_source_potential_checkbox_triggers_no_analysis_recomputation(qapp, qtbot):
+    """
+    Exercises MainWindow._on_layer_state_changed's existing, already-generic
+    code path (no id-specific branching there) with the real
+    "source_potential" id for the first time -- confirming an
+    already-true-by-construction property, not new behavior.
+    """
+    import chess
+
+    from desktop_app.full_position_analysis import build_full_position_analysis
+    from desktop_app.main_window import MainWindow
+
+    window = MainWindow()
+    qtbot.waitUntil(lambda: window.canvas._overlay_colors is not None, timeout=5000)
+
+    call_count = {"n": 0}
+
+    def counting_builder(board: chess.Board):
+        call_count["n"] += 1
+        return build_full_position_analysis(board)
+
+    window.position_cache._builder = counting_builder
+    qtbot.wait(50)
+    baseline_calls = call_count["n"]
+
+    window.layer_panel._checkboxes["source_potential"].setChecked(True)
+    qtbot.wait(100)
+
+    assert call_count["n"] == baseline_calls
+    assert window.session_state.layer_visible("source_potential") is True
 
 
 # ---------------------------------------------------------

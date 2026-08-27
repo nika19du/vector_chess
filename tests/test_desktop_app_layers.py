@@ -2,10 +2,13 @@ import dataclasses
 
 import chess
 import numpy as np
+import pytest
 from matplotlib.figure import Figure
 from OpenGL import GL
 
 from analysis.geometry import math_to_plot_coords
+from analysis.source_field import build_source_field
+from analysis.source_potential import evaluate_source_potential
 from desktop_app.full_position_analysis import build_full_position_analysis
 from desktop_app.layers.attack_influence_layer import build_attack_influence_frame
 from desktop_app.layers.critical_points_layer import build_critical_points_frame, render_critical_points_frame
@@ -13,6 +16,12 @@ from desktop_app.layers.equipotential_layer import build_equipotential_frame, re
 from desktop_app.layers.gradient_layer import build_gradient_frame, render_gradient_frame
 from desktop_app.layers.morse_smale_layer import build_morse_smale_frame, render_morse_smale_frame
 from desktop_app.layers.ridge_valley_layer import build_ridge_valley_frame, render_ridge_valley_frame
+from desktop_app.layers.source_potential_layer import (
+    DEFAULT_KERNEL,
+    build_source_potential_frame,
+    build_source_potential_matrix,
+    render_source_potential_frame,
+)
 from desktop_app.position_cache import CacheEntry, CacheEntryState
 from visualization.attack_influence_plot import draw_attack_influence_overlay
 from visualization.critical_points_plot import MARKER_SPECS
@@ -332,3 +341,125 @@ def test_morse_smale_renderer_produces_fill_and_boundary_geometries():
         # Fan triangulation: (len(polygon) - 1) triangles per polygon, 3 vertices each.
         expected_fill_vertices = sum(3 * (len(polygon) - 1) for polygon in frame.polygons)
         assert fill_geometry.positions.shape[0] == expected_fill_vertices
+
+
+# ---------------------------------------------------------
+# Source Potential (Milestone F)
+# ---------------------------------------------------------
+
+
+def test_source_potential_matrix_matches_evaluate_source_potential_at_every_cell():
+    """
+    Numeric-parity test against the production function directly -- NOT
+    against build_source_potential_surface's 200x200 grid, whose sample
+    points (np.linspace(0.5, 7.5, 200)) don't land on these 64 cell centers
+    except at the two endpoints. evaluate_source_potential is the exact,
+    not-interpolated value at each cell center, and shares its kernel math
+    (resolve_kernel/extract_source_points) with build_source_potential_
+    surface, so this is still "the same Φ_source(x, y) the matplotlib
+    reference plots" -- just verified at the one set of points that has an
+    exact, independently-computable answer.
+    """
+    board = _midgame_board()
+    source_field = build_source_field(board)
+
+    matrix = build_source_potential_matrix(source_field)
+
+    for row in range(8):
+        for column in range(8):
+            expected = evaluate_source_potential(source_field, column + 0.5, row + 0.5, kernel=DEFAULT_KERNEL)
+            assert matrix[row, column] == pytest.approx(expected)
+
+
+def test_source_potential_coordinate_convention_matches_matrix_row0_rank8():
+    """A single white queen on a8 only -- matrix[0][0] (row 0 = rank 8,
+    column 0 = file a) must be the peak value, everywhere else strictly
+    smaller (the Gaussian kernel decays with distance)."""
+    board = chess.Board(fen="Q7/8/8/8/8/8/8/8 w - - 0 1")
+    source_field = build_source_field(board)
+
+    matrix = build_source_potential_matrix(source_field)
+
+    peak_row, peak_column = np.unravel_index(np.argmax(matrix), matrix.shape)
+    assert (peak_row, peak_column) == (0, 0)
+
+
+def test_source_potential_sign_convention_white_positive_black_negative():
+    white_only = chess.Board(fen="4Q3/8/8/8/8/8/8/8 w - - 0 1")
+    black_only = chess.Board(fen="4q3/8/8/8/8/8/8/8 w - - 0 1")
+
+    white_matrix = build_source_potential_matrix(build_source_field(white_only))
+    black_matrix = build_source_potential_matrix(build_source_field(black_only))
+
+    assert np.all(white_matrix >= 0.0)
+    assert np.any(white_matrix > 0.0)
+    assert np.all(black_matrix <= 0.0)
+    assert np.any(black_matrix < 0.0)
+
+
+def test_source_potential_frame_and_matrix_agree():
+    entry = _entry_for(_midgame_board())
+
+    frame = build_source_potential_frame(entry)
+    matrix = build_source_potential_matrix(entry.analysis.source_field)
+
+    assert frame.colors.shape == (8, 8, 4)
+    # Positive matrix cells must colorize toward the positive (White) end of
+    # RdBu_r, negative cells toward the negative (Black) end -- checked via
+    # the same red-vs-blue-channel-dominance property, not a hand-picked
+    # threshold.
+    for row in range(8):
+        for column in range(8):
+            value = matrix[row, column]
+            red, _, blue, _ = frame.colors[row, column]
+            if value > 0:
+                assert red >= blue
+            elif value < 0:
+                assert blue >= red
+
+
+def test_source_potential_renderer_returns_generic_geometry_not_a_bare_ndarray():
+    """
+    The one architectural invariant this layer must never violate: returning
+    a bare ndarray would route through MainWindow._render_all_layers's
+    singleton-overlay path (set_overlay_colors), which Attack Influence
+    exclusively owns -- silently overwriting its buffer and stealing its
+    enabled/opacity flags. Must always be a list[LayerGeometry] instead.
+    """
+    entry = _entry_for(_midgame_board())
+    frame = build_source_potential_frame(entry)
+
+    rendered = render_source_potential_frame(frame)
+
+    assert not isinstance(rendered, np.ndarray)
+    assert isinstance(rendered, list)
+    assert len(rendered) == 1
+    assert rendered[0].primitive == GL.GL_TRIANGLES
+    assert rendered[0].positions.shape == (8 * 8 * 6, 2)
+    assert rendered[0].colors.shape == (8 * 8 * 6, 4)
+
+
+def test_source_potential_matrix_is_independent_of_attack_influence():
+    """
+    Concrete, non-mock proof that these two chess-derived observables are
+    genuinely decoupled: a position where a rook's line of attack influence
+    is fully blocked (so its attack influence contribution beyond the
+    blocker is zero) still contributes its full material weight to Source
+    Potential at its own square and nearby squares -- occupancy, not attack
+    geometry, drives this field.
+    """
+    # White rook on a1, white pawn blocking on a2 -- the rook attacks
+    # nothing beyond a2, but still physically occupies a1.
+    board = chess.Board(fen="8/8/8/8/8/8/P7/R7 w - - 0 1")
+    source_field = build_source_field(board)
+    matrix = build_source_potential_matrix(source_field)
+
+    from analysis.attack_influence import build_attack_influence_field
+
+    attack_matrix = np.array(build_attack_influence_field(board).matrix)
+
+    # a1 is matrix[7][0] (row 0 = rank 8). Attack influence at a1 itself is
+    # 0 (a square doesn't attack itself), while Source Potential at a1 is
+    # strongly positive (the rook's own occupancy).
+    assert attack_matrix[7, 0] == 0.0
+    assert matrix[7, 0] > 0.0

@@ -87,4 +87,6 @@ EQUIPOTENTIAL_LAYER = LayerDefinition(
     display_name="Equipotential",
     data_source=build_equipotential_frame,
     renderer=render_equipotential_frame,
+    category="Geometry",
+    short_caption="Contour lines connecting squares of equal attack influence on the reconstructed surface.",
 )

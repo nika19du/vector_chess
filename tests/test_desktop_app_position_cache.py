@@ -5,6 +5,7 @@ import chess.pgn
 import pytest
 
 from analysis.attack_influence import build_attack_influence_field
+from analysis.source_field import build_source_field
 from desktop_app.position_cache import CacheEntryState, PositionCache
 
 
@@ -179,6 +180,23 @@ def test_background_completion_publishes_the_correct_fen_and_matches_direct_call
     assert entry.analysis.attack_influence_field.balance == expected.balance
     assert entry.analysis.attack_influence_field.strongest_white_square == expected.strongest_white_square
     assert entry.analysis.attack_influence_field.strongest_black_square == expected.strongest_black_square
+
+
+def test_cache_entry_carries_source_field(qtbot):
+    """Milestone F: FullPositionAnalysis.source_field must survive the real
+    background-thread request/publish path, not just a direct
+    build_full_position_analysis call."""
+    cache = PositionCache()
+    board = chess.Board()
+    expected = build_source_field(board)
+
+    with qtbot.waitSignal(cache.position_ready, timeout=2000):
+        fen = cache.request(board)
+
+    entry = cache.get(fen)
+    assert entry.state == CacheEntryState.READY
+    assert entry.analysis.source_field.matrix == expected.matrix
+    assert entry.analysis.source_field.balance == expected.balance
 
 
 def test_background_computation_runs_off_the_calling_thread(qtbot):

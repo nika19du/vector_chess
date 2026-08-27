@@ -244,4 +244,6 @@ MORSE_SMALE_LAYER = LayerDefinition(
     display_name="Morse-Smale",
     data_source=build_morse_smale_frame,
     renderer=render_morse_smale_frame,
+    category="Topology",
+    short_caption="An exploratory topological decomposition of the reconstructed surface into basins.",
 )

@@ -398,7 +398,7 @@ def draw_morse_smale_legend(
         handles=handles,
         loc=CELL_LEGEND_LOC,
         fontsize=8,
-        title="Morse-Smale cells",
+        title="Morse-Smale cells (exploratory)",
         title_fontsize=8,
         framealpha=0.85,
     )
@@ -428,7 +428,7 @@ def configure_axes(
     axes.set_ylabel("Rank")
 
     axes.set_title(
-        "VectorChess Morse-Smale Complex\n"
+        "VectorChess Morse-Smale Complex (exploratory decomposition)\n"
         f"Move: {analysis.move} | "
         f"Attack influence balance: {attack_influence.balance:+.2f}",
         pad=16,

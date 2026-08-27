@@ -22,6 +22,7 @@ from desktop_app.layers.equipotential_layer import EQUIPOTENTIAL_LAYER
 from desktop_app.layers.gradient_layer import GRADIENT_LAYER
 from desktop_app.layers.morse_smale_layer import MORSE_SMALE_LAYER
 from desktop_app.layers.ridge_valley_layer import RIDGE_VALLEY_LAYER
+from desktop_app.layers.source_potential_layer import SOURCE_POTENTIAL_LAYER
 from desktop_app.position_cache import CacheEntryState, PositionCache
 from desktop_app.scrub_controller import ScrubController
 from desktop_app.session_state import SessionState
@@ -34,8 +35,15 @@ from desktop_app.transition_controller import TransitionController
 # top -- mirrors the exact zorder values the existing matplotlib modules
 # already use where given (equipotential=3, ridge/valley=4,
 # Morse-Smale cells=4, critical points=6 highest), not an invented ordering.
+# Source Potential (Milestone F) is inserted second, directly after Attack
+# Influence and before every line/marker layer: it is the second of two
+# translucent whole-grid field fills (like Attack Influence, alpha=0.72), so
+# it stacks with the other field fill underneath the line/marker layers,
+# rather than drawing a field fill on top of Critical Points' glyphs, which
+# are meant to stay the topmost, most-readable layer.
 _LAYERS_IN_DRAW_ORDER = (
     ATTACK_INFLUENCE_LAYER,
+    SOURCE_POTENTIAL_LAYER,
     EQUIPOTENTIAL_LAYER,
     GRADIENT_LAYER,
     RIDGE_VALLEY_LAYER,

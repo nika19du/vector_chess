@@ -148,6 +148,44 @@ def test_no_analysis_recomputation_during_animation_ticks(qapp, qtbot):
     assert call_count["n"] == 0
 
 
+def test_source_potential_geometry_frozen_during_transition_then_refreshed_on_settle(qapp, qtbot):
+    """
+    Milestone F: Source Potential has no bespoke interpolation (matching the
+    existing Equipotential/Gradient precedent -- neither is hardcoded into
+    TransitionController either) -- its geometry must not be re-uploaded
+    mid-animation, only refreshed once the transition settles via the
+    generic on_settled -> _render_all_layers loop, which iterates every
+    registered layer.
+    """
+    window = MainWindow()
+    qtbot.waitUntil(lambda: window.canvas._overlay_colors is not None, timeout=5000)
+    clock = _install_fake_clock_controller(window)
+
+    window.session_state.make_move(chess.Move.from_uci("e2e4"))
+    moved_fen = window.session_state.current_node.board().board_fen()
+    qtbot.waitUntil(lambda: window.transition_controller._to_fen == moved_fen, timeout=5000)
+    window.transition_controller._timer.stop()
+
+    calls = []
+    real_set_layer_geometry = window.canvas.set_layer_geometry
+
+    def spying_set_layer_geometry(layer_id, geometries):
+        if layer_id == "source_potential":
+            calls.append(geometries)
+        return real_set_layer_geometry(layer_id, geometries)
+
+    window.canvas.set_layer_geometry = spying_set_layer_geometry
+
+    # Well under TRANSITION_DURATION_MS (500ms) -- stays mid-animation.
+    for _ in range(5):
+        _tick(window, clock, seconds=0.05)
+    assert calls == []
+
+    _tick(window, clock, seconds=1.0)  # well past TRANSITION_DURATION_MS -- settles
+
+    assert len(calls) == 1
+
+
 def test_correspondence_is_computed_once_per_pair_not_per_frame(qapp, qtbot):
     window = MainWindow()
     qtbot.waitUntil(lambda: window.canvas._overlay_colors is not None, timeout=5000)

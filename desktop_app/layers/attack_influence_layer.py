@@ -90,4 +90,6 @@ ATTACK_INFLUENCE_LAYER = LayerDefinition(
     display_name="Attack Influence",
     data_source=build_attack_influence_frame,
     renderer=render_attack_influence_frame,
+    category="Field",
+    short_caption="Each side's weighted attacking presence, square by square.",
 )

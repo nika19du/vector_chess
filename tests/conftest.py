@@ -181,13 +181,19 @@ def ready_cache_entry(board):
     return CacheEntry(state=CacheEntryState.READY, analysis=build_full_position_analysis(board))
 
 
-def make_critical_point(x, y, classification="maximum", value=0.0):
+def make_critical_point(x, y, classification="maximum", value=0.0, eigenvalue_min=None, eigenvalue_max=None):
     """
     Shared test helper (correspondence/animation milestone): a minimal but
     real `ClassifiedCriticalPoint` for tests that need full control over
     exact positions/classifications (deterministic matching, ambiguous-match,
     cross-classification edge cases) rather than whatever a real chess
     position's own math happens to produce.
+
+    eigenvalue_min/eigenvalue_max (Milestone C, default None as before):
+    only set these when a test actually needs a specific
+    `critical_point_prominence` (visualization/critical_points_plot.py) --
+    every pre-Milestone-C call site keeps constructing points with both
+    None, unaffected by this addition.
     """
     from chess_engine.models import ClassifiedCriticalPoint
 
@@ -202,8 +208,8 @@ def make_critical_point(x, y, classification="maximum", value=0.0):
         f_xy=None,
         f_yx=None,
         f_yy=None,
-        eigenvalue_min=None,
-        eigenvalue_max=None,
+        eigenvalue_min=eigenvalue_min,
+        eigenvalue_max=eigenvalue_max,
         classification=classification,
     )
 

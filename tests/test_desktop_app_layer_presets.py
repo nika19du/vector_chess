@@ -35,23 +35,25 @@ from desktop_app.layers.equipotential_layer import EQUIPOTENTIAL_LAYER
 from desktop_app.layers.gradient_layer import GRADIENT_LAYER
 from desktop_app.layers.morse_smale_layer import MORSE_SMALE_LAYER
 from desktop_app.layers.ridge_valley_layer import RIDGE_VALLEY_LAYER
+from desktop_app.layers.source_potential_layer import SOURCE_POTENTIAL_LAYER
 from desktop_app.main_window import MainWindow
 from desktop_app.session_state import DEFAULT_LAYER_OPACITY, DEFAULT_LAYER_VISIBILITY, SessionState
 
-ALL_SIX_LAYERS = (
+ALL_SEVEN_LAYERS = (
     ATTACK_INFLUENCE_LAYER,
+    SOURCE_POTENTIAL_LAYER,
     EQUIPOTENTIAL_LAYER,
     GRADIENT_LAYER,
     RIDGE_VALLEY_LAYER,
     MORSE_SMALE_LAYER,
     CRITICAL_POINTS_LAYER,
 )
-ALL_SIX_LAYER_IDS = {layer.id for layer in ALL_SIX_LAYERS}
+ALL_SEVEN_LAYER_IDS = {layer.id for layer in ALL_SEVEN_LAYERS}
 
 
 def _registry() -> LayerRegistry:
     registry = LayerRegistry()
-    for layer in ALL_SIX_LAYERS:
+    for layer in ALL_SEVEN_LAYERS:
         registry.register(layer)
     return registry
 
@@ -67,22 +69,36 @@ def _panel(qapp) -> tuple[LayerPanel, SessionState]:
 # ---------------------------------------------------------
 
 
-def test_every_preset_names_all_six_registered_layers_explicitly():
+def test_every_preset_names_all_seven_registered_layers_explicitly():
     """Applying a preset must produce a reproducible view regardless of
     prior state -- every preset lists every layer id, never leaving one
     untouched (which would make the result depend on what was showing
-    before)."""
+    before). Milestone F: Source Potential is now a registered layer too,
+    so every preset's dict must cover it explicitly (see
+    identify_current_preset's exact-key-set comparison, tested directly by
+    test_turning_on_source_potential_desyncs_from_overview_preset below) --
+    not just the original six."""
     for preset in PRESETS:
-        assert set(preset.visibility) == ALL_SIX_LAYER_IDS
-        assert set(preset.opacity) == ALL_SIX_LAYER_IDS
+        assert set(preset.visibility) == ALL_SEVEN_LAYER_IDS
+        assert set(preset.opacity) == ALL_SEVEN_LAYER_IDS
 
 
-def test_no_preset_mentions_source_potential():
-    """Source Potential has no desktop layer (docs/interactive_ui.md Part 5's
-    V1 note) -- it must never appear in any preset's layer set."""
-    for preset in PRESETS:
-        assert "source_potential" not in preset.visibility
-        assert "source_potential" not in preset.opacity
+def test_source_potential_is_off_in_every_curated_preset():
+    """Source Potential is a genuinely different, non-comparable chess-
+    derived observable (occupancy/material, not attack influence) -- none of
+    Overview/Influence/Flow/Topology's own curated rationale needs it, and
+    showing it by default would change the meaning of those existing views."""
+    for preset in (OVERVIEW, INFLUENCE, FLOW, TOPOLOGY):
+        assert preset.visibility["source_potential"] is False
+
+
+def test_source_potential_is_on_only_in_all_layers():
+    """"All Layers" means every registered layer, present tense -- Source
+    Potential is included there, and only there, now that it has a real
+    desktop layer."""
+    assert ALL_LAYERS.visibility["source_potential"] is True
+    for preset in (OVERVIEW, INFLUENCE, FLOW, TOPOLOGY):
+        assert preset is ALL_LAYERS or preset.visibility["source_potential"] is False
 
 
 def test_overview_is_exactly_the_existing_default_startup_state():
@@ -172,6 +188,25 @@ def test_identify_current_preset_returns_none_after_a_manual_opacity_change():
     assert identify_current_preset(session_state) is None
 
 
+def test_turning_on_source_potential_desyncs_from_overview_preset():
+    """Milestone F regression: identify_current_preset compares each
+    preset's visibility dict key-by-key against SessionState. Before every
+    preset's dict explicitly carried "source_potential": False, turning on
+    Source Potential while "Overview" was selected would have left the combo
+    silently still reporting "Overview" instead of "Custom" -- a preset dict
+    that never mentioned the new layer's id would still "match" no matter
+    its actual visibility. This is the single most important new test for
+    this milestone: it fails loudly if that explicit-False requirement is
+    ever dropped from a preset's definition."""
+    session_state = SessionState(chess.pgn.Game())
+    apply_layer_preset(session_state, OVERVIEW)
+    assert identify_current_preset(session_state) == "Overview"
+
+    session_state.set_layer_visible("source_potential", True)
+
+    assert identify_current_preset(session_state) is None
+
+
 def test_manually_recreating_a_presets_exact_state_is_recognized_again():
     """Returning to an exact preset combination by manual toggles alone
     (no apply_layer_preset call) must re-identify it -- this is a pure
@@ -196,6 +231,43 @@ def test_combo_lists_every_preset_plus_custom_in_order(qapp):
     assert items == [preset.name for preset in PRESETS] + [CUSTOM_LABEL]
 
 
+# ---------------------------------------------------------
+# Milestone D (VECTORCHESS_MODEL_V2_INTEGRATION_AUDIT.md Sec. 4): preset
+# descriptions, wired as combo item tooltips.
+# ---------------------------------------------------------
+
+
+def test_every_real_preset_has_a_nonempty_description():
+    for preset in PRESETS:
+        assert preset.description.strip() != "", preset.name
+
+
+def test_topology_preset_description_flags_morse_smale_as_exploratory_not_uniform():
+    description = TOPOLOGY.description.lower()
+    assert "exploratory" in description
+    assert "morse-smale" in description
+    for banned_word in ("unreliable", "invalid", "fake", "broken", "untrustworthy", "merely decorative"):
+        assert banned_word not in description
+
+
+def test_combo_item_tooltips_match_each_presets_description(qapp):
+    from PySide6.QtCore import Qt
+
+    panel, _ = _panel(qapp)
+    for index, preset in enumerate(PRESETS):
+        assert panel._preset_combo.itemText(index) == preset.name
+        assert panel._preset_combo.itemData(index, Qt.ItemDataRole.ToolTipRole) == preset.description
+
+
+def test_custom_label_has_no_tooltip(qapp):
+    from PySide6.QtCore import Qt
+
+    panel, _ = _panel(qapp)
+    custom_index = panel._preset_combo.count() - 1
+    assert panel._preset_combo.itemText(custom_index) == CUSTOM_LABEL
+    assert panel._preset_combo.itemData(custom_index, Qt.ItemDataRole.ToolTipRole) is None
+
+
 def test_combo_starts_on_overview(qapp):
     panel, _ = _panel(qapp)
     assert panel._preset_combo.currentText() == "Overview"
@@ -214,12 +286,12 @@ def test_selecting_a_preset_in_the_combo_applies_it_through_session_state(qapp):
 
 def test_selecting_custom_in_the_combo_does_not_mutate_layer_state(qapp):
     panel, session_state = _panel(qapp)
-    before = {layer_id: session_state.layer_visible(layer_id) for layer_id in ALL_SIX_LAYER_IDS}
+    before = {layer_id: session_state.layer_visible(layer_id) for layer_id in ALL_SEVEN_LAYER_IDS}
 
     custom_index = [panel._preset_combo.itemText(i) for i in range(panel._preset_combo.count())].index(CUSTOM_LABEL)
     panel._on_preset_selected(custom_index)
 
-    after = {layer_id: session_state.layer_visible(layer_id) for layer_id in ALL_SIX_LAYER_IDS}
+    after = {layer_id: session_state.layer_visible(layer_id) for layer_id in ALL_SEVEN_LAYER_IDS}
     assert before == after
 
 
@@ -321,7 +393,7 @@ def test_applying_a_preset_does_not_change_audio_state(qapp, qtbot):
 
 
 # ---------------------------------------------------------
-# Legend completeness / V3 glyph consistency / Source Potential absence
+# Legend completeness / V3 glyph consistency / Source Potential
 # ---------------------------------------------------------
 
 
@@ -335,6 +407,7 @@ def test_legend_mentions_every_implemented_layer(qapp):
     all_text = " ".join(label.text() for label in legend.findChildren(QLabel))
     for expected_substring in (
         "attack influence",
+        "material",  # Milestone F: Source Potential's legend row
         "equipotential",
         "gradient",
         "ridge",
@@ -348,13 +421,31 @@ def test_legend_mentions_every_implemented_layer(qapp):
         assert expected_substring in all_text.lower(), f"legend missing {expected_substring!r}"
 
 
-def test_legend_never_mentions_source_potential(qapp):
+def test_legend_frames_morse_smale_as_exploratory(qapp):
+    # Milestone D: the legend swatch label for Morse-Smale carries the same
+    # "exploratory" framing as the checkbox tooltip and the console plot,
+    # without turning the legend into a paragraph.
+    from PySide6.QtWidgets import QGroupBox, QLabel
+
+    panel, _ = _panel(qapp)
+    legend = panel.findChild(QGroupBox)
+    all_text = " ".join(label.text() for label in legend.findChildren(QLabel))
+
+    assert "morse-smale (exploratory basin)" in all_text.lower()
+
+
+def test_legend_mentions_source_potential(qapp):
+    """Milestone F: Source Potential now has a real desktop layer, so its
+    legend row must exist -- reusing visualization/source_potential_plot.py's
+    own colorbar wording exactly, same precedent as Attack Influence's
+    balance_label."""
     from PySide6.QtWidgets import QGroupBox, QLabel
 
     panel, _ = _panel(qapp)
     legend = panel.findChild(QGroupBox)
     all_text = " ".join(label.text() for label in legend.findChildren(QLabel)).lower()
-    assert "source potential" not in all_text
+    assert "black material" in all_text
+    assert "white material" in all_text
 
 
 def test_legend_critical_point_glyphs_match_v3_shapes_not_obsolete_squares(qapp):

@@ -3,6 +3,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+# Model v2 Integration Audit, Milestone B (VECTORCHESS_MODEL_V2_INTEGRATION_AUDIT.md
+# Sec. 6, 19): the small, fixed set of conceptual categories a real,
+# user-visible layer's metadata may declare. Deliberately three, not more --
+# see VECTORCHESS_MATHEMATICAL_MODEL_V2.md's information hierarchy:
+#
+#   "Field"    -- a chess-derived observable read directly off the position
+#                 (Model v2 Level 2-3), no reconstruction involved.
+#   "Geometry" -- a deterministic differential/geometric readout of the
+#                 reconstructed surface (Model v2 Level 4-5): contour lines,
+#                 gradient vectors -- no detection or classification step.
+#   "Topology" -- a detected, classified, and quality-filtered discrete
+#                 structure traced on the reconstructed surface (Model v2
+#                 Level 6-7): critical points, ridge/valley chains, the
+#                 Morse-Smale complex. Matches `layer_presets.py`'s existing
+#                 "Topology" preset grouping exactly the same three layers,
+#                 not a new, competing taxonomy.
+LAYER_CATEGORIES = ("Field", "Geometry", "Topology")
+
 
 @dataclass(frozen=True)
 class LayerDefinition:
@@ -15,12 +33,37 @@ class LayerDefinition:
     this phase is scoped to avoid. Both are additive when they're actually
     needed (Phase 5d, Phase 5f/5c) -- adding a field with a default to a
     dataclass never breaks an existing registration.
+
+    `category`/`short_caption` (Milestone B, VECTORCHESS_MODEL_V2_INTEGRATION
+    _AUDIT.md Sec. 2, 19): the same "additive, defaulted field" pattern the
+    note above already establishes -- semantic metadata answering "what am I
+    looking at, and what kind of thing is it" for the Layer Panel's tooltip,
+    not a research record. Deliberately NOT here: confidence scores,
+    percentages, experiment IDs, reconstruction parameters, or long
+    descriptions (see VECTORCHESS_MATHEMATICAL_MODEL_V2.md and the
+    Integration Audit for where that evidence actually lives). Defaulted to
+    "" rather than made required so the extensibility tests in
+    tests/test_desktop_app_layer_registry.py and
+    tests/test_desktop_app_layer_panel.py (a bare, minimal `LayerDefinition`
+    registers and renders with no other change) keep working unchanged --
+    every real, user-visible layer sets both explicitly at its own
+    `desktop_app/layers/*_layer.py` definition site.
+
+    category:
+        one of `LAYER_CATEGORIES` for every real layer; "" only for
+        test-only placeholder definitions.
+
+    short_caption:
+        one sentence, answering "what am I looking at" -- never "how was
+        this computed" (that belongs in docs/mathematics.md).
     """
 
     id: str
     display_name: str
     data_source: Callable[[Any], Any]
     renderer: Callable[[Any], Any]
+    category: str = ""
+    short_caption: str = ""
 
 
 class LayerRegistry:

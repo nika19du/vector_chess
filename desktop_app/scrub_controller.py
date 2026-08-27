@@ -227,7 +227,7 @@ class ScrubController(QObject):
         self._canvas.set_layer_geometry("critical_points", render_critical_points_frame(critical_points_frame))
 
         ridge_valley_frame = interpolate_ridge_valley_frame(
-            correspondence.ridge_chains, correspondence.valley_chains, t
+            correspondence.ridge_chains, correspondence.valley_chains, t, correspondence.critical_points
         )
         self._canvas.set_layer_geometry("ridge_valley", render_ridge_valley_frame(ridge_valley_frame))
 

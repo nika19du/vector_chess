@@ -57,6 +57,22 @@ def test_layer_visible_defaults_match_default_layer_visibility():
     assert state.layer_visible("not_a_real_layer") is True
 
 
+def test_source_potential_defaults_to_hidden():
+    """
+    Milestone F's explicit requirement: the new layer must default OFF so
+    startup visual appearance is unchanged. This is the one layer id in
+    DEFAULT_LAYER_VISIBILITY that *must* be explicit and False -- unlike the
+    "unregistered id defaults to True" case above, omitting it here would be
+    a real bug (SessionState.layer_visible defaults to True for any id not
+    in the dict), not a benign fallback.
+    """
+    state = SessionState(_root())
+
+    assert DEFAULT_LAYER_VISIBILITY["source_potential"] is False
+    assert state.layer_visible("source_potential") is False
+    assert state.layer_opacity("source_potential") == 1.0
+
+
 def test_layer_state_changed_fires_on_an_actual_visibility_change(qtbot):
     state = SessionState(_root())
 

@@ -1,3 +1,18 @@
+# What VectorChess Is
+
+VectorChess turns a chess position into a family of mathematical fields, reconstructs the
+ones worth turning into continuous geometry, and renders the result as real-time
+visualization and generative audio — so a game can be watched and heard changing shape, move
+by move. It has no engine and makes no claim about which move is best; its subject is the
+shape and sound of a position as it is, not a verdict on what should happen to it next. See
+`VECTORCHESS_MATHEMATICAL_MODEL_V2.md` (`experiments/geometric_move_prediction/`) for which
+of its mathematical layers are established, which are exploratory, and which are best
+understood as artistic interpretation.
+
+---
+
+# Pipeline
+
 Chess Position
 
 ↓

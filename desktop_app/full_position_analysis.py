@@ -15,6 +15,7 @@ from analysis.morse_smale import (
     locate_morse_smale_separatrices,
 )
 from analysis.ridge_valley import assess_ridge_valley_quality, locate_ridge_valley_chains
+from analysis.source_field import build_source_field
 from chess_engine.models import (
     AttackInfluenceField,
     AttackInfluenceSurface,
@@ -25,6 +26,7 @@ from chess_engine.models import (
     MorseSmaleComplex,
     RidgeValleyChain,
     RidgeValleyQualityAssessment,
+    SourceField,
 )
 
 
@@ -49,6 +51,19 @@ class FullPositionAnalysis:
     `copy.deepcopy`/`dataclasses.replace` on any of these fields; doing so
     silently breaks the identity linkage the ridge/valley and Morse-Smale
     results depend on.
+
+    `source_field` (Milestone F, Model v2 Integration Audit): a second,
+    independent chess-derived observable -- piece occupancy/material (`ρ`),
+    not attack influence. Built straight from `board`, with zero dependency
+    on `attack_influence_field`/`surface`/the critical-point chain above and
+    no participation in that chain's identity contract, so it carries none of
+    this docstring's copy/reconstruct restriction. Only the cheap discrete
+    `SourceField` is cached here -- the continuous Source Potential surface
+    (Φ_source, a 200x200 grid) is deliberately NOT cached per position, to
+    avoid growing `PositionCache` (which currently has no eviction) by
+    ~320KB/entry for a field the desktop layer only needs sampled at 64
+    points; `desktop_app/layers/source_potential_layer.py` derives those 64
+    values from this field directly, at render time.
     """
 
     board: chess.Board
@@ -56,6 +71,7 @@ class FullPositionAnalysis:
     attack_influence_field: AttackInfluenceField
     gradient_field: GradientField
     surface: AttackInfluenceSurface
+    source_field: SourceField
 
     classified_critical_points: list[ClassifiedCriticalPoint]
     critical_point_assessments: list[CriticalPointQualityAssessment]
@@ -80,6 +96,7 @@ def build_full_position_analysis(board: chess.Board) -> FullPositionAnalysis:
     attack_influence_field = build_attack_influence_field(board)
     gradient_field = build_gradient_field(attack_influence_field.matrix)
     surface = build_attack_influence_surface(attack_influence_field)
+    source_field = build_source_field(board)
 
     candidates = locate_critical_points(surface)
     classified_critical_points = classify_critical_points(candidates, surface)
@@ -108,6 +125,7 @@ def build_full_position_analysis(board: chess.Board) -> FullPositionAnalysis:
         attack_influence_field=attack_influence_field,
         gradient_field=gradient_field,
         surface=surface,
+        source_field=source_field,
         classified_critical_points=classified_critical_points,
         critical_point_assessments=critical_point_assessments,
         ridge_chains=ridge_chains,

@@ -10,15 +10,24 @@ from desktop_app.compare_state import CompareState, are_valid_siblings
 from desktop_app.transition import TransitionState
 
 
-# The six layers registered by Phase 5c (desktop_app/layers/*.py). Default
-# visibility deliberately does not turn all six on: with every field layer
-# drawn at once the canvas is visually crowded (six overlapping color scales
-# and marker sets on one 8x8 grid), so the first view shows a legible
-# starting subset -- the two signed color fields plus discrete markers
-# (Attack Influence, Equipotential, Critical Points) -- while the two vector
-# fields and the cell partition (Gradient, Ridge/Valley, Morse-Smale) start
-# hidden, one checkbox away via the layer-strip UI (desktop_app/layer_panel.py).
-# All six remain independently toggleable and can still be shown together.
+# The six layers registered by Phase 5c, plus Source Potential (Milestone F)
+# (desktop_app/layers/*.py). Default visibility deliberately does not turn
+# all seven on: with every field layer drawn at once the canvas is visually
+# crowded (multiple overlapping color scales and marker sets on one 8x8
+# grid), so the first view shows a legible starting subset -- the two signed
+# color fields plus discrete markers (Attack Influence, Equipotential,
+# Critical Points) -- while the two vector fields, the cell partition
+# (Gradient, Ridge/Valley, Morse-Smale), and the second observable (Source
+# Potential) start hidden, one checkbox away via the layer-strip UI
+# (desktop_app/layer_panel.py). Source Potential's default OFF is not merely
+# the same "avoid clutter" reasoning as the other three, though: it is a
+# genuinely different chess-derived observable (occupancy/material, not
+# attack influence -- see docs/mathematics.md, VECTORCHESS_MATHEMATICAL_
+# MODEL_V2.md), so hiding it by default also keeps the startup view's
+# existing meaning ("attack influence and its derived structure") unchanged
+# by this milestone, per its own explicit requirement. All seven remain
+# independently toggleable and can still be shown together (see "All
+# Layers", desktop_app/layer_presets.py).
 DEFAULT_LAYER_VISIBILITY: dict[str, bool] = {
     "attack_influence": True,
     "equipotential": True,
@@ -26,6 +35,7 @@ DEFAULT_LAYER_VISIBILITY: dict[str, bool] = {
     "ridge_valley": False,
     "morse_smale": False,
     "critical_points": True,
+    "source_potential": False,
 }
 
 # Opacity is a presentation-only alpha multiplier applied at draw time
@@ -40,6 +50,7 @@ DEFAULT_LAYER_OPACITY: dict[str, float] = {
     "ridge_valley": 1.0,
     "morse_smale": 1.0,
     "critical_points": 1.0,
+    "source_potential": 1.0,
 }
 
 

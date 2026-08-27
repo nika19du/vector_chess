@@ -1,3 +1,5 @@
+import math
+
 import chess
 import matplotlib.pyplot as plt
 import numpy as np
@@ -74,6 +76,70 @@ MARKER_SIZE = 220
 MARKER_LINEWIDTH = 1.8
 
 LEGEND_MARKER_SIZE = 11
+
+# Milestone C (VECTORCHESS_MODEL_V2_INTEGRATION_AUDIT.md; Experiment 007
+# REPORT.md): matplotlib's `s=` is marker AREA in points^2, so an area
+# scale of 1.35**2 gives the same LINEAR size increase (~35%) as the
+# desktop canvas's PROMINENT_MARKER_SCALE in
+# desktop_app/layers/critical_points_layer.py -- same visual cue, correct
+# units for this renderer.
+PROMINENT_MARKER_SIZE = round(MARKER_SIZE * 1.35**2)
+
+
+def critical_point_prominence(point: ClassifiedCriticalPoint) -> float:
+    """
+    Experiment 007's own prominence measure, reused verbatim (see
+    VECTORCHESS_MATHEMATICAL_MODEL_V2.md Sec. 8.3 and
+    VECTORCHESS_MODEL_V2_INTEGRATION_AUDIT.md Sec. 9): combined curvature
+    magnitude, hypot(eigenvalue_min, eigenvalue_max). Meaningful only for a
+    converged, classified point (eigenvalue_min/max not None) -- every
+    accepted point satisfies this by construction
+    (analysis/critical_point_quality.py only accepts status=="converged"
+    points, which always have both eigenvalues set).
+
+    Not a new scoring function -- the exact formula
+    experiments/geometric_move_prediction/experiment_007_reconstruction_
+    stability/stability_metrics.py's `_curvature_strength` already used to
+    rank critical points for that experiment's stability measurements.
+
+    Every real, production-built accepted point has both eigenvalues set
+    (see above) -- but this function is also handed hand-built points in
+    tests and, defensively, any future caller that hasn't guaranteed that
+    invariant, so a missing eigenvalue resolves to 0.0 (lowest possible
+    prominence, never mistaken for "strongest") rather than raising.
+    """
+
+    if point.eigenvalue_min is None or point.eigenvalue_max is None:
+        return 0.0
+    return math.hypot(point.eigenvalue_min, point.eigenvalue_max)
+
+
+def strongest_critical_point(
+    points: list[ClassifiedCriticalPoint],
+) -> ClassifiedCriticalPoint | None:
+    """
+    The single most prominent point among `points` (expected to already be
+    one position's accepted set), by `critical_point_prominence`, highest
+    first. None for an empty list.
+
+    Deterministic tie-break: Python's `max()` returns the FIRST
+    maximal-value element it encounters for an exact tie, never the last --
+    so ties resolve by `points`' own existing order, which is already
+    deterministic end to end (`locate_critical_points` sorts candidates by
+    `(round(y,6), round(x,6))`, and `critical_point_assessments` preserves
+    that order through classification and quality assessment). This
+    function never reorders or re-sorts `points` itself.
+
+    The ONE canonical ranking helper for this milestone -- both
+    `desktop_app/layers/critical_points_layer.py` (GL canvas) and this
+    module's own `draw_critical_points` (matplotlib) call this, so the
+    definition of "strongest" is never duplicated or allowed to drift
+    between the two renderers.
+    """
+
+    if not points:
+        return None
+    return max(points, key=critical_point_prominence)
 
 
 def plot_critical_points(
@@ -157,18 +223,28 @@ def plot_critical_points(
         candidates = locate_critical_points(surface)
         classified_points = classify_critical_points(candidates, surface)
 
+    # Milestone C: prominence tiering is defined over the ACCEPTED set only
+    # (the same set Experiment 007 ranked) -- in the show_only_accepted=False
+    # debug path, "strongest" would require computing assessments purely to
+    # support that rare path, so it is left None there rather than forcing
+    # extra computation in a debug-only branch (no points are hidden either
+    # way -- only the size cue is skipped).
+    strongest: ClassifiedCriticalPoint | None = None
+
     if show_only_accepted:
         if assessments is None:
             assessments = assess_critical_point_quality(classified_points, surface)
         points_to_draw = [
             assessment.point for assessment in assessments if assessment.is_accepted
         ]
+        strongest = strongest_critical_point(points_to_draw)
     else:
         points_to_draw = classified_points
 
     draw_critical_points(
         axes=axes,
         classified_points=points_to_draw,
+        strongest=strongest,
     )
 
     draw_critical_points_legend(axes=axes)
@@ -196,6 +272,7 @@ def plot_critical_points(
 def draw_critical_points(
     axes: Axes,
     classified_points: list[ClassifiedCriticalPoint],
+    strongest: ClassifiedCriticalPoint | None = None,
 ) -> None:
     """
     Overlay-ва САМО класифицирани критични точки
@@ -208,6 +285,15 @@ def draw_critical_points(
     непрекъснатите (извън-мрежови) позиции на Newton уточняването се
     рисуват точно там, където са намерени, без да се "прилепват"
     към клетка.
+
+    strongest (Milestone C, по подразбиране None): ако е подаден и
+    съвпада (по идентичност) с точка от classified_points, тази точка
+    се рисува с PROMINENT_MARKER_SIZE вместо MARKER_SIZE -- същият
+    визуален знак ("структурно най-силна в тази позиция"), който
+    desktop_app.layers.critical_points_layer вече прилага през размера
+    на GL маркера. Формата и цветът остават напълно непроменени; никакъв
+    нов draw call не се въвежда -- `s=` вече приема масив, един за всяка
+    точка в existing scatter извикването.
     """
 
     for classification in CLASSIFICATION_ORDER:
@@ -228,11 +314,13 @@ def draw_critical_points(
             else {"facecolors": spec["facecolor"], "edgecolors": spec["edgecolor"]}
         )
 
+        sizes = [PROMINENT_MARKER_SIZE if point is strongest else MARKER_SIZE for point in points]
+
         axes.scatter(
             [point.x for point in points],
             [point.y for point in points],
             marker=spec["marker"],
-            s=MARKER_SIZE,
+            s=sizes,
             linewidths=MARKER_LINEWIDTH,
             zorder=CRITICAL_POINT_ZORDER,
             **color_kwargs,

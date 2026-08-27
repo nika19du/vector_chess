@@ -12,6 +12,7 @@ from chess_engine.models import (
     RidgeValleyChain,
 )
 from desktop_app.position_cache import CacheEntry
+from visualization.critical_points_plot import strongest_critical_point
 from visualization.morse_smale_plot import MIN_POINTS_TO_DRAW as MIN_CELL_POINTS_TO_DRAW
 from visualization.ridge_valley_plot import MIN_POINTS_TO_DRAW as MIN_CHAIN_POINTS_TO_DRAW
 
@@ -34,6 +35,22 @@ class CriticalPointCorrespondence:
     matched: list[CriticalPointMatch]
     appeared: list[ClassifiedCriticalPoint]  # only in the current position
     disappeared: list[ClassifiedCriticalPoint]  # only in the previous position
+    # Milestone C (VECTORCHESS_MODEL_V2_INTEGRATION_AUDIT.md): the single
+    # strongest accepted point of EACH real, analyzed endpoint (by
+    # `visualization.critical_points_plot.strongest_critical_point`, the
+    # one canonical ranking helper) -- None only when that endpoint has no
+    # accepted points at all. Computed once, here, from the real endpoint
+    # data `_match_critical_points` already has -- never re-derived from a
+    # lerped/interpolated intermediate frame, so a transition/scrub
+    # consumer (desktop_app/layers/critical_points_layer.py) can look these
+    # up directly instead of re-ranking per animation frame.
+    # Defaulted (not required) so existing hand-built test correspondences
+    # that don't care about prominence keep working unchanged -- the same
+    # "additive, defaulted field" pattern already used for
+    # LayerDefinition.category/short_caption (Milestone B) and
+    # LayerPreset.description (Milestone D).
+    strongest_previous: ClassifiedCriticalPoint | None = None
+    strongest_current: ClassifiedCriticalPoint | None = None
 
 
 @dataclass(frozen=True)
@@ -153,7 +170,13 @@ def _match_critical_points(
 
     disappeared = [point for i, point in enumerate(previous_points) if i not in matched_previous]
     appeared = [point for j, point in enumerate(current_points) if j not in matched_current]
-    return CriticalPointCorrespondence(matched=matched, appeared=appeared, disappeared=disappeared)
+    return CriticalPointCorrespondence(
+        matched=matched,
+        appeared=appeared,
+        disappeared=disappeared,
+        strongest_previous=strongest_critical_point(previous_points),
+        strongest_current=strongest_critical_point(current_points),
+    )
 
 
 def _find_matched_current(matches: list[CriticalPointMatch], previous_point) -> ClassifiedCriticalPoint | None:

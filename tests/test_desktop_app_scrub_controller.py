@@ -37,6 +37,46 @@ def _request_all(cache: PositionCache, nodes: list[chess.pgn.GameNode]) -> None:
 
 
 # ---------------------------------------------------------
+# Milestone F: Source Potential is untouched by scrub
+# ---------------------------------------------------------
+
+
+def test_scrub_never_touches_source_potential_geometry(qapp):
+    """
+    ScrubController mirrors TransitionController's exact 4-layer scope
+    (Attack Influence, Critical Points, Ridge/Valley, Morse-Smale) --
+    Source Potential, like Equipotential/Gradient, is never written by scrub
+    at all (see scrub_controller.py's own class docstring: "same
+    4-of-6-layer scope... Equipotential/Gradient stay frozen, an inherited
+    limitation, not a new one" -- Source Potential inherits the identical
+    limitation). Its last-rendered geometry is simply left alone throughout
+    the scrub gesture, refreshed only when the scrub commits and the normal
+    current_node_changed -> settle path runs (a MainWindow-level concern,
+    exercised separately in tests/test_desktop_app_transition_controller.py).
+    """
+    controller, cache, canvas = _controller()
+    nodes = _chain(["e2e4", "e7e5", "g1f3"])
+    _request_all(cache, nodes)
+    controller.begin(nodes)
+
+    calls = []
+    real_set_layer_geometry = canvas.set_layer_geometry
+
+    def spying_set_layer_geometry(layer_id, geometries):
+        if layer_id == "source_potential":
+            calls.append(geometries)
+        return real_set_layer_geometry(layer_id, geometries)
+
+    canvas.set_layer_geometry = spying_set_layer_geometry
+
+    for path_index, t in ((0, 0.0), (0, 0.5), (1, 0.0), (1, 0.9)):
+        controller.update(ScrubPosition(path_index=path_index, t=t))
+        controller._run_scheduled_scrub_frame()
+
+    assert calls == []
+
+
+# ---------------------------------------------------------
 # exact endpoint behavior
 # ---------------------------------------------------------
 

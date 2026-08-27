@@ -192,10 +192,11 @@ continuously-audible signal — reframed as *dominance*, not *advantage*.
 
 **What the user should learn.** That positional concepts they may already have an
 intuition for — space, tension, an open file, a weak square, a fortress in the endgame —
-are not metaphors. They are measurable geometry. Hearing a corridor "flicker" apart in
-sound the moment a blocking pawn is captured, at the same instant the ridge visibly
-fragments on screen, is the specific experience the whole architecture is built to
-produce.
+are not metaphors. They are constructed geometry: read directly off a chosen chess-derived
+field, built by an explicit, documented method (`docs/mathematics.md` Sections 6–11), rather
+than invented for effect. Hearing a corridor "flicker" apart in sound the moment a blocking
+pawn is captured, at the same instant a ridge visibly fragments on screen, is the specific
+experience the whole architecture is built to produce.
 
 **Why this differs from ChessBase or Lichess.** Those tools answer "what move is best."
 VectorChess never computes or displays a best move — it has no engine. It answers a
@@ -346,10 +347,20 @@ divergence is a defect; both are documented in code (`desktop_app/layers/
 equipotential_layer.py`, `desktop_app/layers/gradient_layer.py`) and covered by dedicated
 regression tests (`tests/test_desktop_app_line_width_hierarchy.py`).
 
-Source Potential (`analysis/source_potential.py`, `visualization/source_potential_plot.py`)
-has no desktop layer and is not one of the six registered layers — analysis/reference
-implementations exist, but no `desktop_app` code references it. This is an intentional
-scope gap, not a bug.
+**Milestone F update:** Source Potential (`analysis/source_potential.py`,
+`visualization/source_potential_plot.py`) now has a desktop layer
+(`desktop_app/layers/source_potential_layer.py`, id `"source_potential"`, category
+`"Field"`), a seventh entry in `_LAYERS_IN_DRAW_ORDER`. It samples Φ_source (the
+continuous, Gaussian-kernel reconstruction — not the raw discrete occupancy field) at
+each of the 64 board-square centers via `analysis.source_potential.
+evaluate_source_potential`, colorized on its own independent symmetric `RdBu_r` scale
+(never comparable to Attack Influence's). It defaults OFF and is excluded from every
+curated preset (Overview/Influence/Flow/Topology); it appears only in "All Layers". It
+has no bespoke transition/scrub interpolation — like Equipotential/Gradient, its
+geometry freezes during an active animation/scrub and refreshes on settle. It does not
+feed Gradient/Equipotential/Critical Points/Ridge-Valley/Morse-Smale, which remain
+derived from Attack Influence only (Model v2's "several observables, not one merged
+landscape" — see `VECTORCHESS_MATHEMATICAL_MODEL_V2.md` Sec. 12). No audio change.
 
 ---
 
@@ -709,13 +720,20 @@ become six `LayerDefinition` registrations in the same dependency order establis
 v1 — board squares/pieces remain outside the registry, since they aren't derived from
 `analysis/` output.
 
-**Source Potential is not one of the six.** `analysis/source_potential.py` and its
-reference plot (`visualization/source_potential_plot.py`) exist, same as every other
-math-derived object, but no `LayerDefinition` registers it and
-`FullPositionAnalysis` doesn't carry its field — this is a deliberate, tracked scope
-gap (interactive milestones 5a–5f registered the other six first), not a mathematical
-defect or a coordinate-fidelity issue. Adding it is future work for whichever milestone
-picks up the next `LayerDefinition`, not implied by anything in this Part.
+**Milestone F update: Source Potential is now a seventh `LayerDefinition`.**
+`analysis/source_potential.py` and its reference plot
+(`visualization/source_potential_plot.py`) are wired into the desktop app via
+`desktop_app/layers/source_potential_layer.py`. `FullPositionAnalysis` carries the
+cheap discrete `SourceField` (not the continuous 200x200 `SourcePotentialSurface`,
+deliberately, to avoid growing `PositionCache` — which has no eviction yet — by
+~320KB/entry for a field the layer only samples at 64 points); the layer's
+`data_source` derives Φ_source at those 64 points from the cached `SourceField`, at
+render time, the same "cheap per-render re-derivation from cached analysis" tier every
+other layer already uses. Renders through the generic `LayerGeometry`/
+`set_layer_geometry` path (never the singleton overlay `set_overlay_colors` owns
+exclusively for Attack Influence). Defaults OFF; excluded from every curated preset,
+included only in "All Layers". See `VECTORCHESS_MODEL_V2_INTEGRATION_AUDIT.md` Sec. 19
+("Milestone F") for the original proposal this closes.
 
 **Animator is an open strategy, not a closed pair.** Grid lerp and Part 4.5's
 point-correspondence matching are the two built-in implementations needed by the six
@@ -744,9 +762,12 @@ does not decide *which voices exist or what they mean musically*, which remains
 **Why needed.** Makes adding a future mathematical object's visualization additive (one
 new `LayerDefinition`) instead of invasive. On the audio side, `docs/audio.md` §5 names
 a future Generative Music Engine stage with more voices (plausibly one per Morse-Smale
-cell, per Part 7/12's framing of cells as musical sections); without a registry, that
-stage would require hand-touching the mixer UI and the audio engine's voice-iteration
-logic directly — the same invasive pattern the Layer Registry avoids on the visual side.
+cell, per Part 7/12's framing of cells as musical sections — an artistic mapping onto a
+reconstruction-sensitive structure, not an assumption that cell count or identity stays
+fixed across positions or reconstruction settings; see `docs/mathematics.md` Section 11
+and `VECTORCHESS_MATHEMATICAL_MODEL_V2.md`); without a registry, that stage would require
+hand-touching the mixer UI and the audio engine's voice-iteration logic directly — the same
+invasive pattern the Layer Registry avoids on the visual side.
 
 **Integration with existing code.** Each `LayerDefinition.data_source` calls an existing
 `analysis/*` builder function unchanged. Each registered voice's synthesis still calls
@@ -942,9 +963,11 @@ Disposition, M3).
   grid-shaped new object gets interpolation for free, and a discrete-object-shaped one
   only needs to state its own classification/anchor rule.
 - **A future audio voice** (e.g., a per-cell voice for the Generative Music Engine, per
-  `docs/audio.md` §5) is equally additive: register it in the Voice Registry (Part 5)
-  the same way a future visual layer is registered in the Layer Registry — neither
-  requires touching the mixer UI or the layer strip directly.
+  `docs/audio.md` §5 — an artistic mapping onto a reconstruction-sensitive structure, not
+  a claim that cells are stable or countable across settings, per `docs/mathematics.md`
+  Section 11) is equally additive: register it in the Voice Registry (Part 5) the same
+  way a future visual layer is registered in the Layer Registry — neither requires
+  touching the mixer UI or the layer strip directly.
 - **N-way Compare** (beyond two panels) is not built now, but nothing in Part 4's design
   assumes exactly two: `SessionState.camera` and `compare_state` are already scoped
   per-canvas-instance rather than hardcoded to a pair.

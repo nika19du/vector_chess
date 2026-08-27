@@ -461,6 +461,27 @@ def test_headless_rendering_succeeds_for_a_real_position():
     plt.close("all")
 
 
+def test_title_and_legend_frame_the_complex_as_exploratory():
+    # Milestone D (VECTORCHESS_MODEL_V2_INTEGRATION_AUDIT.md Sec. 6): the
+    # mathematical name stays, framing is added alongside it -- not a
+    # rename, not a warning, not a paragraph.
+    game, analysis, surface, complex_, cell_assessments = real_position_pipeline(["e2e4"])
+
+    plot_morse_smale_cells(game.board, analysis, surface, complex_, cell_assessments)
+
+    axes = plt.gcf().axes[0]
+    title = axes.get_title()
+    assert "VectorChess Morse-Smale Complex" in title
+    assert "exploratory" in title.lower()
+
+    legend = axes.get_legend()
+    assert legend is not None
+    assert "morse-smale cells" in legend.get_title().get_text().lower()
+    assert "exploratory" in legend.get_title().get_text().lower()
+
+    plt.close("all")
+
+
 def test_headless_rendering_succeeds_for_the_egg_crate_surface():
     surface = surface_from_function(egg_crate(4.0, 4.0))
     candidates = locate_critical_points(surface)

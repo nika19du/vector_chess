@@ -135,4 +135,6 @@ GRADIENT_LAYER = LayerDefinition(
     display_name="Gradient",
     data_source=build_gradient_frame,
     renderer=render_gradient_frame,
+    category="Geometry",
+    short_caption="Direction and strength of the steepest local change in attack influence.",
 )

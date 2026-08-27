@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from desktop_app.layer_presets import CUSTOM_LABEL, PRESETS, apply_layer_preset, identify_current_preset
-from desktop_app.layer_registry import LayerRegistry
+from desktop_app.layer_registry import LayerDefinition, LayerRegistry
 from desktop_app.session_state import SessionState
 from visualization.critical_points_plot import MARKER_SPECS
 from visualization.equipotential_plot import CONTOUR_LINE_COLOR
@@ -45,6 +45,14 @@ LEGEND_SCROLL_MIN_HEIGHT_PX = 60
 # puts on its own colorbar -- not a new claim about what the colors mean,
 # just the same one carried into this panel's legend.
 ATTACK_INFLUENCE_LEGEND_TEXT = "Black attack influence ← balance → White attack influence"
+
+# Milestone F: reuses the exact wording visualization/source_potential_
+# plot.py already puts on its own colorbar, same precedent as
+# ATTACK_INFLUENCE_LEGEND_TEXT above. Deliberately says "material," not
+# "attacks"/"control" -- Source Potential is occupancy/material-derived, a
+# different observable from Attack Influence (see desktop_app/layers/
+# source_potential_layer.py's short_caption).
+SOURCE_POTENTIAL_LEGEND_TEXT = "Black material ← independent scale → White material"
 
 # Reuses docs/mathematics.md Section 9's classification vocabulary and
 # `visualization/critical_points_plot.py`'s own MARKER_SPECS colors --
@@ -125,7 +133,17 @@ class LayerPanel(QWidget):
         preset_row = QHBoxLayout()
         preset_row.addWidget(QLabel("Preset"))
         self._preset_combo = QComboBox()
-        self._preset_combo.addItems([preset.name for preset in PRESETS] + [CUSTOM_LABEL])
+        # Milestone D: one tooltip per preset item, wired the same minimal
+        # way as the layer checkboxes' tooltips -- no new widget, no
+        # layout change. CUSTOM_LABEL has no description (it isn't a real
+        # preset) and so gets no tooltip.
+        for preset in PRESETS:
+            self._preset_combo.addItem(preset.name)
+            if preset.description:
+                self._preset_combo.setItemData(
+                    self._preset_combo.count() - 1, preset.description, Qt.ItemDataRole.ToolTipRole
+                )
+        self._preset_combo.addItem(CUSTOM_LABEL)
         # `activated` fires only on genuine user interaction (mouse/keyboard
         # selection), never on the programmatic setCurrentText() calls
         # _sync_preset_combo makes below -- so applying a preset and merely
@@ -135,7 +153,7 @@ class LayerPanel(QWidget):
         outer_layout.addLayout(preset_row)
 
         for layer in layer_registry.all():
-            outer_layout.addLayout(self._build_layer_row(layer.id, layer.display_name))
+            outer_layout.addLayout(self._build_layer_row(layer))
 
         # Only the legend lives inside a scroll area -- reference material,
         # not a frequently-used control, so requiring a scroll gesture at
@@ -156,10 +174,20 @@ class LayerPanel(QWidget):
         session_state.layer_state_changed.connect(self._on_layer_state_changed)
         self._sync_preset_combo()
 
-    def _build_layer_row(self, layer_id: str, display_name: str) -> QHBoxLayout:
+    def _build_layer_row(self, layer: LayerDefinition) -> QHBoxLayout:
+        layer_id = layer.id
         row = QHBoxLayout()
 
-        checkbox = QCheckBox(display_name)
+        checkbox = QCheckBox(layer.display_name)
+        # Milestone B (VECTORCHESS_MODEL_V2_INTEGRATION_AUDIT.md Sec. 5, 9):
+        # the existing checkbox stays the one and only primary control --
+        # its label is still just `display_name` -- the new category/caption
+        # metadata rides along as a tooltip, the least intrusive Qt
+        # mechanism available, with no new widget and no layout change.
+        # Test-only placeholder LayerDefinitions (category="") get no
+        # tooltip rather than a malformed "": ...".
+        if layer.category and layer.short_caption:
+            checkbox.setToolTip(f"{layer.category}: {layer.short_caption}")
         checkbox.setChecked(self._session_state.layer_visible(layer_id))
         checkbox.toggled.connect(
             lambda checked, layer_id=layer_id: self._session_state.set_layer_visible(layer_id, checked)
@@ -264,6 +292,9 @@ def _build_legend() -> QGroupBox:
     completely unexplained despite all being simultaneously visible in the
     "All Layers" preset.
 
+    Milestone F: now covers a seventh, Source Potential -- one further
+    label row, same pattern as Attack Influence's own balance_label.
+
     Deliberately compact: the four critical-point classifications sit in a
     2x2 grid (not four stacked rows) and Ridge/Valley share one row (two
     small swatches, one label) -- both a direct, measured fix for a real
@@ -280,6 +311,10 @@ def _build_legend() -> QGroupBox:
     balance_label = QLabel(ATTACK_INFLUENCE_LEGEND_TEXT)
     balance_label.setWordWrap(True)
     layout.addWidget(balance_label)
+
+    source_potential_label = QLabel(SOURCE_POTENTIAL_LEGEND_TEXT)
+    source_potential_label.setWordWrap(True)
+    layout.addWidget(source_potential_label)
 
     points_grid = QGridLayout()
     points_grid.setSpacing(2)
@@ -303,6 +338,9 @@ def _build_legend() -> QGroupBox:
     ridge_valley_row.addWidget(QLabel("Ridge / Valley"), stretch=1)
     layout.addLayout(ridge_valley_row)
 
-    _legend_swatch_row(layout, _color_swatch(ACCEPTED_CELL_FILL_COLOR), "Morse-Smale (basin)")
+    # Milestone D: "exploratory" carries the same framing as this layer's
+    # checkbox tooltip (desktop_app/layers/morse_smale_layer.py) into the
+    # legend, without turning either into a paragraph.
+    _legend_swatch_row(layout, _color_swatch(ACCEPTED_CELL_FILL_COLOR), "Morse-Smale (exploratory basin)")
 
     return box

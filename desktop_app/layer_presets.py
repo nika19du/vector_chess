@@ -12,13 +12,33 @@ from desktop_app.session_state import DEFAULT_LAYER_OPACITY, DEFAULT_LAYER_VISIB
 # apply_layer_preset/identify_current_preset below, both pure reads/writes
 # through its existing API).
 #
-# Each preset explicitly lists all six desktop-registered layers (matching
-# desktop_app/layer_registry.py's registration order) -- omitting a layer
-# id here would leave its prior visibility untouched, which would make
-# "apply preset" state-dependent on whatever was showing before it, not a
-# clean, reproducible view. Source Potential is not one of the six: it has
-# no desktop layer (see docs/interactive_ui.md Part 5's V1 note), so it
-# cannot appear in any preset.
+# Each preset explicitly lists all six original desktop-registered layers
+# (matching desktop_app/layer_registry.py's registration order) -- omitting
+# a layer id here would leave its prior visibility untouched, which would
+# make "apply preset" state-dependent on whatever was showing before it, not
+# a clean, reproducible view.
+#
+# Milestone F: Source Potential now has a real desktop layer
+# (desktop_app/layers/source_potential_layer.py), so it does appear in every
+# preset's dict from here on -- but only ALL_LAYERS turns it on. It is
+# deliberately excluded (explicit `False`, not omitted -- see below) from
+# OVERVIEW/INFLUENCE/FLOW/TOPOLOGY: it is a genuinely different,
+# non-comparable chess-derived observable (occupancy/material, not attack
+# influence -- visualization/source_potential_plot.py's own docstring: "две
+# отделни математически модела... не са сравними директно"), and none of
+# those four presets' own curated rationale (see each preset's comment
+# below) currently needs a second scalar field. `ALL_LAYERS` -- whose own
+# name/docstring already says "every implemented layer," present tense, not
+# a frozen six-item list -- is where it belongs.
+#
+# The `False` entry in the four curated presets must be explicit, not an
+# omission: `identify_current_preset` (below) compares each preset's
+# `visibility` dict key-by-key against SessionState, so a preset dict that
+# doesn't mention "source_potential" at all would still report a "match"
+# even when Source Potential is visible=True -- silently leaving the combo
+# showing e.g. "Overview" instead of flipping to "Custom." Explicitly
+# listing it as `False` in every curated preset's dict is what makes that
+# exact-match comparison correct once a 7th toggleable layer exists.
 
 
 @dataclass(frozen=True)
@@ -31,16 +51,32 @@ class LayerPreset:
     # untouched by preset selection except that selecting a preset resets
     # it back to a known, deterministic starting point).
     opacity: dict[str, float]
+    # Milestone D (VECTORCHESS_MODEL_V2_INTEGRATION_AUDIT.md Sec. 4): one
+    # short sentence, shown as the preset combo item's tooltip -- the same
+    # "additive, defaulted field" pattern Milestone B used for
+    # `LayerDefinition.category`/`short_caption`. Empty string is a valid,
+    # tooltip-less default, never required.
+    description: str = ""
 
 
 _ALL_LAYER_IDS = ("attack_influence", "equipotential", "gradient", "ridge_valley", "morse_smale", "critical_points")
 
+# Milestone F: kept separate from _ALL_LAYER_IDS on purpose -- widening
+# _ALL_LAYER_IDS itself would silently add Source Potential to every preset
+# built from it (INFLUENCE/FLOW/TOPOLOGY too, not just ALL_LAYERS).
+# `_preset()` below always adds this id explicitly instead, so every preset
+# it builds still covers all seven ids (see the module comment above on why
+# an explicit `False` -- not an omission -- is required).
+_SOURCE_POTENTIAL_ID = "source_potential"
 
-def _preset(name: str, visible_layer_ids: set[str]) -> LayerPreset:
+
+def _preset(name: str, visible_layer_ids: set[str], description: str = "") -> LayerPreset:
+    all_ids = (*_ALL_LAYER_IDS, _SOURCE_POTENTIAL_ID)
     return LayerPreset(
         name=name,
-        visibility={layer_id: layer_id in visible_layer_ids for layer_id in _ALL_LAYER_IDS},
-        opacity={layer_id: 1.0 for layer_id in _ALL_LAYER_IDS},
+        visibility={layer_id: layer_id in visible_layer_ids for layer_id in all_ids},
+        opacity={layer_id: 1.0 for layer_id in all_ids},
+        description=description,
     )
 
 
@@ -54,14 +90,19 @@ def _preset(name: str, visible_layer_ids: set[str]) -> LayerPreset:
 # layers (Ridge/Valley, Morse-Smale) and the vector field (Gradient) are one
 # click away, not pre-loaded.
 OVERVIEW = LayerPreset(
-    name="Overview", visibility=dict(DEFAULT_LAYER_VISIBILITY), opacity=dict(DEFAULT_LAYER_OPACITY)
+    name="Overview",
+    visibility=dict(DEFAULT_LAYER_VISIBILITY),
+    opacity=dict(DEFAULT_LAYER_OPACITY),
+    description="Field, contours, and critical points together.",
 )
 
 # INFLUENCE: the raw scalar field alone, nothing else -- for reading pure
 # dominance without any overlay competing for attention. Deliberately
 # narrower than OVERVIEW (no equipotential, no markers), so the two remain
 # genuinely distinct choices rather than near-duplicates.
-INFLUENCE = _preset("Influence", {"attack_influence"})
+INFLUENCE = _preset(
+    "Influence", {"attack_influence"}, description="The raw attack-influence field alone."
+)
 
 # FLOW: equipotential (constant-value contours) + gradient (direction of
 # steepest change) -- a complementary pair the reference's own
@@ -69,7 +110,11 @@ INFLUENCE = _preset("Influence", {"attack_influence"})
 # (ATTACK_INFLUENCE_ALPHA is defined and used in that same module), so
 # Attack Influence stays on here too rather than showing bare contour/
 # vector geometry with no field context for what's "high" or "low".
-FLOW = _preset("Flow", {"attack_influence", "equipotential", "gradient"})
+FLOW = _preset(
+    "Flow",
+    {"attack_influence", "equipotential", "gradient"},
+    description="The field with its contours and direction of steepest change.",
+)
 
 # TOPOLOGY: the structural/topological triad -- critical points (the
 # features), ridge/valley (the chains connecting them), and Morse-Smale
@@ -78,13 +123,30 @@ FLOW = _preset("Flow", {"attack_influence", "equipotential", "gradient"})
 # that the raw scalar field competes with the translucent Morse-Smale cell
 # fill for the same color attention, while the plain board chrome lets the
 # topology read cleanly as its own "skeleton" view.
-TOPOLOGY = _preset("Topology", {"critical_points", "ridge_valley", "morse_smale"})
+TOPOLOGY = _preset(
+    "Topology",
+    {"critical_points", "ridge_valley", "morse_smale"},
+    # Milestone D: the three layers here are not scientifically
+    # interchangeable (VECTORCHESS_MATHEMATICAL_MODEL_V2.md Sec. 11) --
+    # this description says so directly, in one sentence, rather than
+    # implying "Topology" means one uniform thing.
+    description="Derived structural views of the reconstructed surface: "
+    "critical points and ridge/valley, plus the exploratory Morse-Smale decomposition.",
+)
 
 # ALL: every implemented layer -- technically complete, verified visually
 # to be noticeably more cluttered than any single-purpose preset above (V2/
 # V3's hierarchy work keeps it *readable*, not *uncluttered*). Kept as the
 # explicit debug/inspection option, not the default.
-ALL_LAYERS = _preset("All Layers", set(_ALL_LAYER_IDS))
+#
+# Milestone F: "every implemented layer" is this preset's own stated
+# meaning (present tense, not a frozen six-item list) -- Source Potential is
+# included here, and only here, once it has a real desktop layer.
+ALL_LAYERS = _preset(
+    "All Layers",
+    {*_ALL_LAYER_IDS, _SOURCE_POTENTIAL_ID},
+    description="Every registered layer at once.",
+)
 
 # Order matters: this is the exact order presets appear in the LayerPanel's
 # combo box, Overview first since it's the default.

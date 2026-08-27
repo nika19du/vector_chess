@@ -1,13 +1,14 @@
 import chess
 import pytest
 
-from desktop_app.layer_registry import LayerDefinition, LayerRegistry
+from desktop_app.layer_registry import LAYER_CATEGORIES, LayerDefinition, LayerRegistry
 from desktop_app.layers.attack_influence_layer import ATTACK_INFLUENCE_LAYER
 from desktop_app.layers.critical_points_layer import CRITICAL_POINTS_LAYER
 from desktop_app.layers.equipotential_layer import EQUIPOTENTIAL_LAYER
 from desktop_app.layers.gradient_layer import GRADIENT_LAYER
 from desktop_app.layers.morse_smale_layer import MORSE_SMALE_LAYER
 from desktop_app.layers.ridge_valley_layer import RIDGE_VALLEY_LAYER
+from desktop_app.layers.source_potential_layer import SOURCE_POTENTIAL_LAYER
 from tests.conftest import ready_cache_entry
 
 ALL_SIX_LAYERS = (
@@ -138,6 +139,84 @@ def test_registering_a_seventh_dummy_layer_requires_no_change_to_the_registry():
     assert registry.get("dummy_seventh") is dummy_layer
 
 
+# ---------------------------------------------------------
+# Milestone B (VECTORCHESS_MODEL_V2_INTEGRATION_AUDIT.md Sec. 2, 11, 19):
+# layer metadata -- category + short_caption -- for every real, user-visible
+# layer.
+# ---------------------------------------------------------
+
+# Regression guard: these are the exact display names the Layer Panel
+# checkbox labels show today. Metadata is additive to this milestone -- the
+# labels themselves must not silently drift.
+EXPECTED_DISPLAY_NAMES = {
+    "attack_influence": "Attack Influence",
+    "equipotential": "Equipotential",
+    "gradient": "Gradient",
+    "ridge_valley": "Ridge / Valley",
+    "morse_smale": "Morse-Smale",
+    "critical_points": "Critical Points",
+}
+
+
+def test_every_real_layer_has_a_unique_id():
+    ids = [layer.id for layer in ALL_SIX_LAYERS]
+    assert len(ids) == len(set(ids)) == 6
+
+
+def test_every_real_layer_display_name_is_stable():
+    for layer in ALL_SIX_LAYERS:
+        assert layer.display_name == EXPECTED_DISPLAY_NAMES[layer.id]
+
+
+def test_every_real_layer_has_a_valid_category():
+    for layer in ALL_SIX_LAYERS:
+        assert layer.category in LAYER_CATEGORIES, layer.id
+
+
+def test_every_real_layer_has_a_nonempty_short_caption():
+    for layer in ALL_SIX_LAYERS:
+        assert layer.short_caption.strip() != "", layer.id
+
+
+def test_a_bare_layer_definition_still_registers_with_no_metadata():
+    # The exact extensibility property the class docstring promises: a
+    # minimal LayerDefinition (no category/short_caption supplied) is still
+    # perfectly valid -- metadata is additive, never required by the
+    # registry itself.
+    registry = LayerRegistry()
+    bare_layer = LayerDefinition(
+        id="bare",
+        display_name="Bare",
+        data_source=lambda entry: entry,
+        renderer=lambda frame: frame,
+    )
+    registry.register(bare_layer)
+
+    assert registry.get("bare").category == ""
+    assert registry.get("bare").short_caption == ""
+
+
+def test_morse_smale_is_categorized_as_topology_and_framed_as_exploratory():
+    # Direct check against Sec. 6/18's instruction: Morse-Smale must remain
+    # available, in the same Topology category as Critical Points and
+    # Ridge/Valley, with wording that communicates "exploratory" rather than
+    # "unreliable/invalid/fake".
+    assert MORSE_SMALE_LAYER.category == "Topology"
+    assert "exploratory" in MORSE_SMALE_LAYER.short_caption.lower()
+    for banned_word in ("unreliable", "invalid", "fake", "broken", "unstable"):
+        assert banned_word not in MORSE_SMALE_LAYER.short_caption.lower()
+
+
+def test_critical_points_caption_does_not_claim_uniform_chess_significance():
+    # Sec. 7's instruction: describe what critical points mathematically
+    # are, without implying every detected point is equally chess-
+    # significant. The caption should describe the surface's shape, not
+    # assert a confidence/significance claim of any kind.
+    caption = CRITICAL_POINTS_LAYER.short_caption.lower()
+    for banned_word in ("significant", "important", "reliable", "confidence", "best"):
+        assert banned_word not in caption
+
+
 def test_each_new_layers_data_source_and_renderer_round_trip_on_a_real_position():
     # A smoke check that every new layer's pipeline runs end to end without
     # error on a real, non-trivial position -- full coordinate/quality
@@ -152,3 +231,67 @@ def test_each_new_layers_data_source_and_renderer_round_trip_on_a_real_position(
         frame = layer.data_source(entry)
         rendered = layer.renderer(frame)
         assert rendered is not None
+
+
+# ---------------------------------------------------------
+# Milestone F (Source/Occupancy Desktop Integration): a second, independent
+# chess-derived observable (occupancy/material), not attack influence.
+# ---------------------------------------------------------
+
+
+def test_source_potential_layer_registers_alongside_the_six_real_layers():
+    registry = LayerRegistry()
+    for layer in ALL_SIX_LAYERS:
+        registry.register(layer)
+    registry.register(SOURCE_POTENTIAL_LAYER)
+
+    assert len(registry.all()) == 7
+    assert registry.get("source_potential") is SOURCE_POTENTIAL_LAYER
+
+
+def test_source_potential_layer_metadata():
+    assert SOURCE_POTENTIAL_LAYER.id == "source_potential"
+    assert SOURCE_POTENTIAL_LAYER.display_name == "Source Potential"
+    assert SOURCE_POTENTIAL_LAYER.category in LAYER_CATEGORIES
+    caption = SOURCE_POTENTIAL_LAYER.short_caption.lower()
+    assert caption.strip() != ""
+    # Milestone F Phase 2's explicit requirement: must not imply attack
+    # control, mobility, tactical pressure, or engine evaluation. "attack"/
+    # "control" are allowed to appear only as an explicit disclaimer
+    # ("not attacks or control") -- checked directly below -- so they are
+    # not in this blind substring ban; the others must never appear at all.
+    for banned_word in ("mobility", "tactical", "engine", "evaluation", "threat"):
+        assert banned_word not in caption
+    assert "not attacks" in caption or "not attack" in caption
+    assert "control" not in caption or "or control" in caption
+    # ...and must actually say what it is: occupancy/material-derived.
+    assert "occupancy" in caption or "material" in caption
+
+
+def test_source_potential_layer_data_source_and_renderer_round_trip():
+    board = chess.Board()
+    for move in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6"):
+        board.push_san(move)
+    entry = ready_cache_entry(board)
+
+    frame = SOURCE_POTENTIAL_LAYER.data_source(entry)
+    rendered = SOURCE_POTENTIAL_LAYER.renderer(frame)
+
+    assert frame.colors.shape == (8, 8, 4)
+    # Must be a list[LayerGeometry], never a bare ndarray -- a bare ndarray
+    # would collide with Attack Influence's singleton overlay buffer (see
+    # source_potential_layer.py's own docstring on this).
+    assert isinstance(rendered, list)
+    assert len(rendered) == 1
+    assert rendered[0].positions.shape == (8 * 8 * 6, 2)
+    assert rendered[0].colors.shape == (8 * 8 * 6, 4)
+
+
+def test_source_potential_never_appears_in_the_audio_voice_registry():
+    """Milestone F Phase 10: no audio changes -- a cheap structural guard
+    that Source Potential never gets registered as a voice id, confirming
+    "no audio changes" holds structurally, not just by omission."""
+    from audio.voices import build_default_voice_registry
+
+    registry = build_default_voice_registry()
+    assert "source_potential" not in registry
